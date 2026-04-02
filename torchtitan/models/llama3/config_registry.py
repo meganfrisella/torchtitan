@@ -33,35 +33,40 @@ from . import model_registry
 def llama3_debugmodel() -> Trainer.Config:
     return Trainer.Config(
         hf_assets_path="./tests/assets/tokenizer",
-        model_spec=model_registry("debugmodel"),
-        optimizer=OptimizersContainer.Config(lr=8e-4),
-        lr_scheduler=LRSchedulersContainer.Config(
-            warmup_steps=2,
-            decay_ratio=0.8,
-            decay_type="linear",
-            min_lr_factor=0.0,
+        profiling=ProfilingConfig(
+            enable_profiling=True,
         ),
+        metrics=MetricsProcessor.Config(
+            enable_tensorboard=True,
+            log_freq=1,
+        ),
+        model_spec=model_registry("debugmodel"),
+        optimizer=OptimizersContainer.Config(lr=1.5e-4),
         training=TrainingConfig(
-            local_batch_size=8,
-            seq_len=2048,
-            steps=10,
+            local_batch_size=16,
+            seq_len=128,
+            steps=5,
+            dtype="bfloat16",
         ),
         dataloader=HuggingFaceTextDataLoader.Config(
             dataset="c4_test",
         ),
-        metrics=MetricsProcessor.Config(log_freq=1),
-        parallelism=ParallelismConfig(pipeline_parallel_schedule="Interleaved1F1B"),
-        checkpoint=CheckpointManager.Config(
-            interval=10,
-            last_save_model_only=False,
+        parallelism=ParallelismConfig(
+            data_parallel_replicate_degree=2,
+            pipeline_parallel_degree=2,
+            pipeline_parallel_microbatch_size=4,
+            pipeline_parallel_schedule="1F1B",
         ),
+        checkpoint=CheckpointManager.Config(enable=False),
         activation_checkpoint=ActivationCheckpointConfig(
             mode="selective",
+
         ),
         validator=Validator.Config(
-            freq=5,
-            steps=10,
+            freq=500,
+            steps=1200,
         ),
+        # compile=CompileConfig(enable=True),
     )
 
 
@@ -115,29 +120,37 @@ def llama3_8b() -> Trainer.Config:
         hf_assets_path="./assets/hf/Llama-3.1-8B",
         profiling=ProfilingConfig(
             enable_profiling=True,
-            profile_freq=100,
         ),
         metrics=MetricsProcessor.Config(
             enable_tensorboard=True,
+            log_freq=1,
         ),
         model_spec=model_registry("8B"),
-        optimizer=OptimizersContainer.Config(lr=3e-4),
+        optimizer=OptimizersContainer.Config(lr=1.5e-4),
         training=TrainingConfig(
-            local_batch_size=1,
-            seq_len=8192,
-            steps=1000,
+            local_batch_size=128,
+            seq_len=1024,
+            steps=5,
+            dtype="bfloat16",
         ),
         dataloader=HuggingFaceTextDataLoader.Config(
             dataset="c4",
         ),
-        checkpoint=CheckpointManager.Config(interval=500),
+        parallelism=ParallelismConfig(
+            pipeline_parallel_degree=4,
+            pipeline_parallel_microbatch_size=4,
+            pipeline_parallel_schedule="1F1B",
+        ),
+        checkpoint=CheckpointManager.Config(enable=False),
         activation_checkpoint=ActivationCheckpointConfig(
             mode="selective",
+
         ),
         validator=Validator.Config(
             freq=500,
             steps=1200,
         ),
+        compile=CompileConfig(enable=True),
     )
 
 
@@ -146,30 +159,37 @@ def llama3_70b() -> Trainer.Config:
         hf_assets_path="./assets/hf/Llama-3.1-70B",
         profiling=ProfilingConfig(
             enable_profiling=True,
-            profile_freq=100,
         ),
         metrics=MetricsProcessor.Config(
             enable_tensorboard=True,
+            log_freq=1,
         ),
         model_spec=model_registry("70B"),
         optimizer=OptimizersContainer.Config(lr=1.5e-4),
         training=TrainingConfig(
-            local_batch_size=8,
-            seq_len=8192,
-            steps=1000,
+            local_batch_size=128,
+            seq_len=1024,
+            steps=5,
+            dtype="bfloat16",
         ),
         dataloader=HuggingFaceTextDataLoader.Config(
             dataset="c4",
         ),
         parallelism=ParallelismConfig(
-            tensor_parallel_degree=8,
+            pipeline_parallel_degree=8,
+            pipeline_parallel_microbatch_size=4,
+            pipeline_parallel_schedule="1F1B",
         ),
-        checkpoint=CheckpointManager.Config(interval=500),
-        activation_checkpoint=ActivationCheckpointConfig(mode="full"),
+        checkpoint=CheckpointManager.Config(enable=False),
+        activation_checkpoint=ActivationCheckpointConfig(
+            mode="selective",
+
+        ),
         validator=Validator.Config(
             freq=500,
             steps=1200,
         ),
+        # compile=CompileConfig(enable=True),
     )
 
 

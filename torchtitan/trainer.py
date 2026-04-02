@@ -234,6 +234,12 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful, Configurable):
         self.tokenizer = config.tokenizer.build(tokenizer_path=config.hf_assets_path)
 
         # build dataloader
+        # Non-zero local ranks wait for local rank 0 to prime the HuggingFace
+        # dataset cache before making their own requests, avoiding HTTP timeouts
+        # when multiple processes hit the HF servers simultaneously.
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        if local_rank != 0:
+            torch.distributed.barrier()
         self.dataloader = config.dataloader.build(
             dp_world_size=batch_degree,
             dp_rank=batch_rank,
@@ -241,6 +247,8 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful, Configurable):
             seq_len=config.training.seq_len,
             local_batch_size=config.training.local_batch_size,
         )
+        if local_rank == 0:
+            torch.distributed.barrier()
 
         # build model (using meta init)
         model_config = model_spec.model
@@ -821,6 +829,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful, Configurable):
         ):
             data_iterator = self.batch_generator(self.dataloader)
             while self.should_continue_training():
+                start = time.perf_counter()
                 self.step += 1
                 self.gc_handler.run(self.step)
                 try:
@@ -852,6 +861,8 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful, Configurable):
                         timeout=timedelta(seconds=config.comm.train_timeout_seconds),
                         parallel_dims=self.parallel_dims,
                     )
+                end = time.perf_counter()
+                logger.info(f"Training iter {self.step} took {(end - start):.5f} s")
 
         if torch.distributed.get_rank() == 0:
             logger.info("Sleeping 2 seconds for other ranks to complete")
