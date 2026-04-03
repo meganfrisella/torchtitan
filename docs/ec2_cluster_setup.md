@@ -12,6 +12,27 @@ a rebuild or repull.
 to work on p4d.24xlarge. Without it, `fi_pingpong` and NCCL collectives hang
 at the data-transfer stage even though NCCL init succeeds.
 
+
+## Variables
+
+Set these before running any commands:
+
+```bash
+export PATH_TO_TORCHTITAN=/m-coriander/coriander/mfris/torchtitan
+export REGION=us-east-2
+export AMI=ami-03ab193c1b65d3fc7
+export INSTANCE_TYPE=p4d.24xlarge
+export SUBNET=subnet-0572b36ed0e0551f2  # public subnet (all NICs, both nodes)
+export SG=sg-0687f77bfa22e1791
+export KEY=ray-autoscaler_us-east-2
+export CR_ID=$CR_ID  # set by Step 0, or hardcode: cr-XXXXXXXXXXXXXXXXX
+export PG_NAME=piper-cluster-pg  # create once: aws ec2 create-placement-group --group-name $PG_NAME --strategy cluster --region $REGION
+export SSH_KEY=~/.ssh/ray-autoscaler_us-east-2.pem
+export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export ECR_REGISTRY=${ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com
+export IMAGE=${ECR_REGISTRY}/torchtitan-70b:latest  # Option A (ECR); for Option B use: export IMAGE=mfris/torchtitan-70b:latest
+```
+
 ---
 
 ## Test Locally (requires 4x GPU)
@@ -49,25 +70,6 @@ echo "Capacity reservation: $CR_ID"
 ```
 
 ---
-
-## Variables
-
-Set these before running any commands:
-
-```bash
-export PATH_TO_TORCHTITAN=/m-coriander/coriander/mfris/torchtitan
-export REGION=us-east-2
-export AMI=ami-03ab193c1b65d3fc7
-export INSTANCE_TYPE=p4d.24xlarge
-export SUBNET=subnet-0572b36ed0e0551f2  # public subnet (all NICs, both nodes)
-export SG=sg-0687f77bfa22e1791
-export KEY=ray-autoscaler_us-east-2
-export CR_ID=$CR_ID  # set by Step 0, or hardcode: cr-XXXXXXXXXXXXXXXXX
-export PG_NAME=torchtitan-cluster-pg  # create once: aws ec2 create-placement-group --group-name $PG_NAME --strategy cluster --region $REGION
-export SSH_KEY=~/.ssh/ray-autoscaler_us-east-2.pem
-export IMAGE=123456789.dkr.ecr.us-east-2.amazonaws.com/torchtitan-70b:latest
-export ECR_REGISTRY=123456789.dkr.ecr.us-east-2.amazonaws.com
-```
 
 ## Release Stale EIPs (relaunch only)
 
@@ -189,8 +191,9 @@ done
 
 ## Step 4: Pull Image and Sync Code to Head
 
-The instances need IAM permissions to pull from ECR. Attach the
-`AmazonEC2ContainerRegistryReadOnly` policy to the instance IAM role, then:
+Choose one of the two options below to pull the image on the head node.
+
+**Option A: Pull from ECR** (requires `AmazonEC2ContainerRegistryReadOnly` on the instance IAM role)
 
 ```bash
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP "
@@ -198,9 +201,20 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP "
     | docker login --username AWS --password-stdin $ECR_REGISTRY
   docker pull $IMAGE
 "
+```
 
+**Option B: Pull from DockerHub**
+
+```bash
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP "
+  docker pull mfris/torchtitan-70b:latest
+"
+export IMAGE=mfris/torchtitan-70b:latest
+```
+
+```bash
 rsync -av --delete \
-  --exclude='.git' --exclude='__pycache__' --exclude='.venv' \
+  --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='out' \
   -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
   $PATH_TO_TORCHTITAN/ ubuntu@$HEAD_PUBLIC_IP:/home/ubuntu/torchtitan/
 ```
@@ -247,6 +261,10 @@ done
 
 ## Step 8: Pull Image, Sync Code, and Start Docker on Worker
 
+Choose one of the two options below to pull the image on the worker node.
+
+**Option A: Pull from ECR** (requires `AmazonEC2ContainerRegistryReadOnly` on the instance IAM role)
+
 ```bash
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
   -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
@@ -255,9 +273,21 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
     | docker login --username AWS --password-stdin $ECR_REGISTRY
   docker pull $IMAGE
 "
+```
 
+**Option B: Pull from DockerHub**
+
+```bash
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+  -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+  ubuntu@$WORKER_PRIVATE_IP "
+  docker pull mfris/torchtitan-70b:latest
+"
+```
+
+```bash
 rsync -av --delete \
-  --exclude='.git' --exclude='__pycache__' --exclude='.venv' \
+  --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='out' \
   -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o 'ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP'" \
   $PATH_TO_TORCHTITAN/ ubuntu@$WORKER_PRIVATE_IP:/home/ubuntu/torchtitan/
 
@@ -360,10 +390,20 @@ ssh -i $SSH_KEY \
 ssh -i $SSH_KEY ubuntu@$HEAD_PUBLIC_IP "cat /tmp/fi_ping_container_server.log"
 ```
 
-## Step 10: Run NCCL Benchmark
+## Step 10: Run Tests
 
-16 GPUs cross-node across all 4 EFA NICs. Uses static rendezvous (`--node_rank`)
-to avoid c10d hostname resolution issues. Both nodes can start simultaneously.
+Run these in order. Each step validates a prerequisite for the next.
+
+### 10a. EFA connectivity
+
+Run the container-level fi_pingpong from Step 9b. Both nodes must pass before
+proceeding.
+
+### 10b. Debug model with nsys tracing
+
+Smoke test cross-node training and verify nsys tracing works. Uses static
+rendezvous (`--node_rank`) to avoid c10d hostname resolution issues. Both nodes
+can start simultaneously.
 
 To confirm EFA is active, add `-e NCCL_DEBUG=INFO` and look for
 `"NET/OFI Initializing aws-ofi-nccl"` and `"Using EFA"` in the output.
@@ -375,11 +415,11 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
    -e GLOO_SOCKET_IFNAME=ens32 \
    -e NCCL_PROTO=simple \
    torchtitan \
-   torchrun --nnodes=2 --nproc_per_node=2 \
+   torchrun --nnodes=2 --nproc_per_node=8 \
    --node_rank=0 \
    --master_addr=$HEAD_PRIVATE_IP --master_port=29500 \
    --local-ranks-filter 0 --role rank --tee 3 \
-   -m torchtitan.train --module llama3 --config llama3_debugmodel" &
+   torchtitan/run.py torchtitan.train --module llama3 --config llama3_debugmodel" &
 
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
   -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
@@ -389,11 +429,34 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
    -e GLOO_SOCKET_IFNAME=ens32 \
    -e NCCL_PROTO=simple \
    torchtitan \
-   torchrun --nnodes=2 --nproc_per_node=2 \
+   torchrun --nnodes=2 --nproc_per_node=8 \
    --node_rank=1 \
    --master_addr=$HEAD_PRIVATE_IP --master_port=29500 \
    --local-ranks-filter 0 --role rank --tee 3 \
-   -m torchtitan.train --module llama3 --config llama3_debugmodel"
+   torchtitan/run.py torchtitan.train --module llama3 --config llama3_debugmodel"
+wait
+```
+
+### 10c. Full 70B run
+
+```bash
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
+  "docker exec -w /workspace/torchtitan \
+   -e NCCL_SOCKET_IFNAME=ens32 \
+   -e GLOO_SOCKET_IFNAME=ens32 \
+   -e NCCL_PROTO=simple \
+   torchtitan \
+   bash -c 'NNODE=2 NGPU=8 LOG_RANK=0 CONFIG=llama3_70b NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
+
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+  -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+  ubuntu@$WORKER_PRIVATE_IP \
+  "docker exec -w /workspace/torchtitan \
+   -e NCCL_SOCKET_IFNAME=ens32 \
+   -e GLOO_SOCKET_IFNAME=ens32 \
+   -e NCCL_PROTO=simple \
+   torchtitan \
+   bash -c 'NNODE=2 NGPU=8 LOG_RANK=0 CONFIG=llama3_70b NODE_RANK=1 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'"
 wait
 ```
 
@@ -411,13 +474,34 @@ wait
 
 ---
 
+## Downloading Traces
+
+Nsys traces are written to `/workspace/torchtitan/out/`, which is bind-mounted from
+`/home/ubuntu/torchtitan/out/` on each host — no `docker cp` needed.
+
+```bash
+# From head node
+rsync -av \
+  -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
+  ubuntu@$HEAD_PUBLIC_IP:/home/ubuntu/torchtitan/out/ \
+  $PATH_TO_TORCHTITAN/ec2-out/
+
+# From worker node (via head as jump host)
+rsync -av \
+  -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o 'ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP'" \
+  ubuntu@$WORKER_PRIVATE_IP:/home/ubuntu/torchtitan/out/ \
+  $PATH_TO_TORCHTITAN/ec2-out/
+```
+
+---
+
 ## Updating Code
 
 Since the source is mounted from the host, code changes only require an rsync
 to each node — no rebuild or repull needed:
 
 ```bash
-RSYNC_OPTS="--delete --exclude='.git' --exclude='__pycache__' --exclude='.venv'"
+RSYNC_OPTS="--delete --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='out'"
 
 # Head
 rsync -av $RSYNC_OPTS \

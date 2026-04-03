@@ -25,11 +25,15 @@ set -ex
 #    - Useful for debugging distributed training logic locally
 #    Example: NGPU=32 COMM_MODE="local_tensor" ./run_train.sh
 
+NNODE=${NNODE:-"1"}
 NGPU=${NGPU:-"8"}
 export LOG_RANK=${LOG_RANK:-0}
 MODULE=${MODULE:-"llama3"}
 CONFIG=${CONFIG:-"llama3_debugmodel"}
 COMM_MODE=${COMM_MODE:-""}
+MASTER_ADDR=${MASTER_ADDR:-"localhost"}
+MASTER_PORT=${MASTER_PORT:-"29500"}
+NODE_RANK=${NODE_RANK:-"0"}
 
 TORCHFT_LIGHTHOUSE=${TORCHFT_LIGHTHOUSE:-"http://localhost:29510"}
 
@@ -48,7 +52,8 @@ else
     # Normal training with torchrun + nsys
     PYTORCH_ALLOC_CONF="expandable_segments:True" \
     TORCHFT_LIGHTHOUSE=${TORCHFT_LIGHTHOUSE} \
-    torchrun --nproc_per_node=${NGPU} --rdzv_backend c10d --rdzv_endpoint="localhost:0" \
+    torchrun --nnodes=${NNODE} --nproc_per_node=${NGPU} \
+    --node_rank=${NODE_RANK} --master_addr=${MASTER_ADDR} --master_port=${MASTER_PORT} \
     --local-ranks-filter ${LOG_RANK} --role rank --tee 3 \
     run.py torchtitan.train --module ${MODULE} --config ${CONFIG} "$@"
 fi

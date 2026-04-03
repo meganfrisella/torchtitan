@@ -8,8 +8,13 @@ COPY pyproject.toml README.md LICENSE /workspace/torchtitan-deps/
 COPY assets/version.txt /workspace/torchtitan-deps/assets/version.txt
 
 USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cuda-nsight-systems-12-8 \
+    && rm -rf /var/lib/apt/lists/*
 RUN pip install torch --index-url https://download.pytorch.org/whl/cu128
 RUN pip install /workspace/torchtitan-deps/
 RUN pip install --upgrade fsspec
+
+RUN mkdir -p /workspace/out
 
 ENV PYTHONPATH=/workspace/torchtitan

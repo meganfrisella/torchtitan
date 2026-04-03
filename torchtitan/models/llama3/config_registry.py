@@ -43,7 +43,7 @@ def llama3_debugmodel() -> Trainer.Config:
         model_spec=model_registry("debugmodel"),
         optimizer=OptimizersContainer.Config(lr=1.5e-4),
         training=TrainingConfig(
-            local_batch_size=16,
+            local_batch_size=64,
             seq_len=128,
             steps=5,
             dtype="bfloat16",
@@ -53,7 +53,7 @@ def llama3_debugmodel() -> Trainer.Config:
         ),
         parallelism=ParallelismConfig(
             data_parallel_replicate_degree=2,
-            pipeline_parallel_degree=2,
+            pipeline_parallel_degree=8,
             pipeline_parallel_microbatch_size=4,
             pipeline_parallel_schedule="1F1B",
         ),
@@ -129,7 +129,7 @@ def llama3_8b() -> Trainer.Config:
         optimizer=OptimizersContainer.Config(lr=1.5e-4),
         training=TrainingConfig(
             local_batch_size=128,
-            seq_len=1024,
+            seq_len=512,
             steps=5,
             dtype="bfloat16",
         ),
@@ -137,9 +137,11 @@ def llama3_8b() -> Trainer.Config:
             dataset="c4",
         ),
         parallelism=ParallelismConfig(
+            data_parallel_shard_degree=2,
             pipeline_parallel_degree=4,
-            pipeline_parallel_microbatch_size=4,
-            pipeline_parallel_schedule="1F1B",
+            pipeline_parallel_microbatch_size=16,
+            # pipeline_parallel_schedule="1F1B",
+            fsdp_reshard_after_forward="always",
         ),
         checkpoint=CheckpointManager.Config(enable=False),
         activation_checkpoint=ActivationCheckpointConfig(
@@ -167,8 +169,8 @@ def llama3_70b() -> Trainer.Config:
         model_spec=model_registry("70B"),
         optimizer=OptimizersContainer.Config(lr=1.5e-4),
         training=TrainingConfig(
-            local_batch_size=128,
-            seq_len=1024,
+            local_batch_size=32,
+            seq_len=8,
             steps=5,
             dtype="bfloat16",
         ),
@@ -176,13 +178,14 @@ def llama3_70b() -> Trainer.Config:
             dataset="c4",
         ),
         parallelism=ParallelismConfig(
+            data_parallel_replicate_degree=2,
             pipeline_parallel_degree=8,
             pipeline_parallel_microbatch_size=4,
             pipeline_parallel_schedule="1F1B",
         ),
         checkpoint=CheckpointManager.Config(enable=False),
         activation_checkpoint=ActivationCheckpointConfig(
-            mode="selective",
+            mode="full",
 
         ),
         validator=Validator.Config(

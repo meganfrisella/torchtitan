@@ -12,15 +12,31 @@ a rebuild or repush — only dependency changes do.
 - [Docker](https://docs.docker.com/get-docker/) installed locally
 - [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/install-clang.html) installed and configured (`aws configure`)
 - An AWS account with permissions to create ECR repositories and EC2 instances
+- Llama 3.1 70B tokenizer downloaded to `assets/hf/Llama-3.1-70B/` (see below)
+
+### Download the Llama 3.1 70B tokenizer
+
+Requires a Hugging Face account with access granted to
+[meta-llama/Llama-3.1-70B](https://huggingface.co/meta-llama/Llama-3.1-70B).
+
+```bash
+pip install huggingface_hub
+
+huggingface-cli download meta-llama/Llama-3.1-70B \
+  --include "tokenizer*.json" "special_tokens_map.json" \
+  --local-dir $PATH_TO_TORCHTITAN/assets/hf/Llama-3.1-70B
+```
 
 ---
 
 ## Variables
 
-Set this before running any commands:
+Set these before running any commands:
 
 ```bash
 export PATH_TO_TORCHTITAN=/m-coriander/coriander/mfris/torchtitan
+export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export ECR_REGISTRY=${ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com
 ```
 
 ---
@@ -57,31 +73,87 @@ docker run --rm --gpus all \
   -m torchtitan.train --module llama3 --config llama3_debugmodel
 ```
 
+### 2b. Test nsys tracing (requires 4x GPU)
+
+Traces are written to `/workspace/out/` inside the container.
+
+```bash
+docker run --rm --gpus all \
+  -v $PATH_TO_TORCHTITAN:/workspace/torchtitan \
+  -v $PATH_TO_TORCHTITAN/assets/hf/:/workspace/assets/hf/ \
+  -v $PATH_TO_TORCHTITAN/tests/assets:/workspace/tests/assets \
+  -w /workspace \
+  torchtitan-70b:latest \
+  torchrun --nproc_per_node=4 \
+  --rdzv_backend c10d --rdzv_endpoint localhost:0 \
+  --local-ranks-filter 0 --role rank --tee 3 \
+  torchtitan/run.py torchtitan.train --module llama3 --config llama3_debugmodel
+```
+
+Traces will appear at `/workspace/out/torchtitan-compile-rank{0..3}.nsys-rep`.
+
 ---
 
-## 3. Push to ECR
+## 3. Push Image
 
-### 3a. Create the ECR repository (one-time)
+Choose either ECR (private, same-region pulls are free) or DockerHub (public, no IAM setup needed).
+
+---
+
+### Option A: ECR
+
+#### 3a. Create the ECR repository (one-time)
 
 ```bash
 aws ecr create-repository --repository-name torchtitan-70b --region us-east-2
 ```
 
 Note the `repositoryUri` from the output:
-`123456789.dkr.ecr.us-east-2.amazonaws.com/torchtitan-70b`
+`${ECR_REGISTRY}/torchtitan-70b`
 
-### 3b. Authenticate and push
+#### 3a-ii. Create the ECRReadOnly instance profile (one-time)
+
+EC2 instances use this profile to pull from ECR without manual credential setup.
+
+```bash
+aws iam create-role --role-name ECRReadOnly \
+  --assume-role-policy-document '{
+    "Version":"2012-10-17",
+    "Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]
+  }'
+
+aws iam attach-role-policy --role-name ECRReadOnly \
+  --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+aws iam create-instance-profile --instance-profile-name ECRReadOnly
+aws iam add-role-to-instance-profile \
+  --instance-profile-name ECRReadOnly \
+  --role-name ECRReadOnly
+```
+
+#### 3b. Authenticate and push
 
 ```bash
 aws ecr get-login-password --region us-east-2 \
-  | docker login --username AWS --password-stdin \
-    123456789.dkr.ecr.us-east-2.amazonaws.com
+  | docker login --username AWS --password-stdin $ECR_REGISTRY
 
 docker tag torchtitan-70b:latest \
-  123456789.dkr.ecr.us-east-2.amazonaws.com/torchtitan-70b:latest
+  ${ECR_REGISTRY}/torchtitan-70b:latest
 
 docker push \
-  123456789.dkr.ecr.us-east-2.amazonaws.com/torchtitan-70b:latest
+  ${ECR_REGISTRY}/torchtitan-70b:latest
+```
+
+---
+
+### Option B: DockerHub
+
+```bash
+docker login
+
+docker tag torchtitan-70b:latest <username>/torchtitan-70b:latest
+
+docker push <username>/torchtitan-70b:latest
 ```
 
 ---
@@ -131,16 +203,16 @@ rsync -av --delete \
 ```bash
 aws ecr get-login-password --region us-east-2 \
   | docker login --username AWS --password-stdin \
-    123456789.dkr.ecr.us-east-2.amazonaws.com
+    ${ECR_REGISTRY}
 
 docker pull \
-  123456789.dkr.ecr.us-east-2.amazonaws.com/torchtitan-70b:latest
+  ${ECR_REGISTRY}/torchtitan-70b:latest
 
 docker run --rm --gpus all \
   -v /home/ubuntu/torchtitan:/workspace/torchtitan \
   -v /home/ubuntu/torchtitan/assets/hf/:/workspace/assets/hf/ \
   -v /home/ubuntu/torchtitan/tests/assets:/workspace/tests/assets \
-  123456789.dkr.ecr.us-east-2.amazonaws.com/torchtitan-70b:latest \
+  ${ECR_REGISTRY}/torchtitan-70b:latest \
   torchrun --nproc_per_node=8 \
   --rdzv_backend c10d --rdzv_endpoint localhost:0 \
   --local-ranks-filter 0 --role rank --tee 3 \
