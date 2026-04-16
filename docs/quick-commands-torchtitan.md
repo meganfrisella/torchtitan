@@ -3,11 +3,11 @@
 export PATH_TO_TORCHTITAN=/m-coriander/coriander/mfris/torchtitan
 export IMAGE=mfris/torchtitan-70b:latest
 export SSH_KEY=~/.ssh/ray-autoscaler_us-east-2.pem
-export HEAD_PUBLIC_IP=3.138.251.20
-export HEAD_PRIVATE_IP=10.0.1.126
-export WORKER1_PRIVATE_IP=10.0.1.164
-export WORKER2_PRIVATE_IP=10.0.1.101
-export WORKER3_PRIVATE_IP=10.0.1.241
+export HEAD_PUBLIC_IP=xxx
+export HEAD_PRIVATE_IP=xxx
+export WORKER1_PRIVATE_IP=xxx
+export WORKER2_PRIVATE_IP=xxx
+export WORKER3_PRIVATE_IP=xxx
 ```
 
 # Re-sync code
