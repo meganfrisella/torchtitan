@@ -13,6 +13,7 @@
 #   --config NAME     Config function name (default: $CONFIG or qwen3_9b)
 #   --master-port PORT  Rendezvous port (default: $MASTER_PORT or 29500)
 #   --nsight          Use run_train_nsys.sh instead of run_train.sh
+#   --log-rank RANKS  LOG_RANK value for run_train.sh (default: $LOG_RANK or 0)
 #   --log-to-file     Tee all output to out/ec2/<config>_<timestamp>.log
 #   --out-dir DIR     Directory for log files (default: out/ec2)
 #
@@ -27,6 +28,7 @@ MODULE="${MODULE:-qwen3}"
 CONFIG="${CONFIG:-qwen3_9b}"
 MASTER_PORT="${MASTER_PORT:-29500}"
 NSIGHT=false
+LOG_RANK="${LOG_RANK:-0}"
 LOG_TO_FILE=false
 OUT_DIR="out/ec2"
 
@@ -38,6 +40,7 @@ while [[ $# -gt 0 ]]; do
         --config)       CONFIG="$2";       shift 2 ;;
         --master-port)  MASTER_PORT="$2";  shift 2 ;;
         --nsight)       NSIGHT=true;       shift ;;
+        --log-rank)     LOG_RANK="$2";     shift 2 ;;
         --log-to-file)  LOG_TO_FILE=true;  shift ;;
         --out-dir)      OUT_DIR="$2";      shift 2 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
@@ -84,7 +87,7 @@ $SSH ubuntu@$HEAD_PUBLIC_IP \
    -e NCCL_PROTO=simple \
    torchtitan \
    bash -c 'echo HEAD; pwd; ls -l $TRAIN_SCRIPT; \
-     NNODE=$NNODE NGPU=$NGPU LOG_RANK=0 MODULE=$MODULE CONFIG=$CONFIG \
+     NNODE=$NNODE NGPU=$NGPU LOG_RANK=$LOG_RANK MODULE=$MODULE CONFIG=$CONFIG \
      NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=$MASTER_PORT \
      $TRAIN_SCRIPT'" &
 
@@ -98,7 +101,7 @@ for WORKER_IP in $WORKERS; do
      -e NCCL_PROTO=simple \
      torchtitan \
      bash -c 'echo WORKER; pwd; ls -l $TRAIN_SCRIPT; \
-       NNODE=$NNODE NGPU=$NGPU LOG_RANK=0 MODULE=$MODULE CONFIG=$CONFIG \
+       NNODE=$NNODE NGPU=$NGPU LOG_RANK=$LOG_RANK MODULE=$MODULE CONFIG=$CONFIG \
        NODE_RANK=$NODE_RANK MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=$MASTER_PORT \
        $TRAIN_SCRIPT'" &
   NODE_RANK=$((NODE_RANK + 1))
