@@ -23,12 +23,10 @@ from torch.nn.attention import sdpa_kernel, SDPBackend
 from torch.nn.attention.flex_attention import (
     _mask_mod_signature,
     _score_mod_signature,
-    AuxRequest,
     BlockMask,
     create_block_mask,
     flex_attention,
 )
-from torch.nn.attention.varlen import varlen_attn
 from torch.types import Number
 
 from torchtitan.models.common.linear import Linear
@@ -187,6 +185,8 @@ class VarlenAttentionWrapper(LocalMapAttention):
         xk_packed = xk_packed.to(torch.bfloat16)
         xv_packed = xv_packed.to(torch.bfloat16)
 
+        from torch.nn.attention.varlen import varlen_attn
+
         return varlen_attn(
             xq_packed,
             xk_packed,
@@ -260,6 +260,8 @@ class FlexAttentionWrapper(LocalMapAttention):
         # 2. `self._compiled_flex_attn` is not correct, `self` will be passed in
         #    as the first argument, which will cause an error.
         #    `FlexAttentionWrapper._compiled_flex_attn` is correct.
+        from torch.nn.attention.flex_attention import AuxRequest
+
         out, aux = FlexAttentionWrapper._compiled_flex_attn(
             q,
             k,

@@ -25,7 +25,23 @@ from torchtitan.tools.logging import logger
 
 def _load_c4_dataset(dataset_path: str, split: str):
     """Load C4 dataset with default configuration."""
-    return load_dataset(dataset_path, name="en", split=split, streaming=True)
+    import time
+
+    from huggingface_hub.errors import HfHubHTTPError
+
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            return load_dataset(dataset_path, name="en", split=split, streaming=True)
+        except HfHubHTTPError as e:
+            if attempt == max_retries - 1:
+                raise
+            wait = 30 * (2**attempt)
+            logger.warning(
+                f"HF API error loading C4 (attempt {attempt + 1}/{max_retries}): {e}. "
+                f"Retrying in {wait}s..."
+            )
+            time.sleep(wait)
 
 
 def _process_c4_text(sample: dict[str, Any]) -> str:

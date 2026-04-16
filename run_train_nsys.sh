@@ -48,12 +48,12 @@ else
     # torchrun --nproc_per_node=${NGPU} --rdzv_backend c10d --rdzv_endpoint="localhost:0" \
     # --local-ranks-filter ${LOG_RANK} --role rank --tee 3 \
     # -m torchtitan.train --module ${MODULE} --config ${CONFIG} "$@"
-
-    # Multi-node training without nsys
+    
+    # Multi-node training with torchrun + nsys
     PYTORCH_ALLOC_CONF="expandable_segments:True" \
     TORCHFT_LIGHTHOUSE=${TORCHFT_LIGHTHOUSE} \
     torchrun --nnodes=${NNODE} --nproc_per_node=${NGPU} \
     --node_rank=${NODE_RANK} --master_addr=${MASTER_ADDR} --master_port=${MASTER_PORT} \
     --local-ranks-filter ${LOG_RANK} --role rank --tee 3 \
-    -m torchtitan.train --module ${MODULE} --config ${CONFIG} "$@"
+    run.py torchtitan.train --module ${MODULE} --config ${CONFIG} "$@"
 fi

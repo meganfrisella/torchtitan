@@ -93,9 +93,9 @@ class ParallelDims:
         which is created by flattening the batch and cp dimensions.
         This API performs the following unflatten operations from the world mesh:
 
-            ["pp", "batch", "cp", "tp"]  # dataloading_mesh
-            ["pp", "dp_replicate", "fsdp", "tp"]  # dense_mesh
-            ["pp", "dp_replicate", "efsdp", "ep", "etp"]  # sparse_mesh
+            ["batch", "pp", "cp", "tp"]  # dataloading_mesh
+            ["dp_replicate", "fsdp", "pp", "tp"]  # dense_mesh
+            ["dp_replicate", "efsdp", "ep", "pp", "etp"]  # sparse_mesh
 
         Note: DeviceMesh currently recreates the process group for each dimension.
         It should share the process group for the same dim group to avoid unnecessary
@@ -143,19 +143,19 @@ class ParallelDims:
         )
         dataloading_mesh = unflatten_mesh(
             self._world_mesh,
-            ("pp", "batch", "cp", "tp"),
-            (self.pp, batch, self.cp, self.tp),
+            ("batch", "pp", "cp", "tp"),
+            (batch, self.pp, self.cp, self.tp),
         )
         loss_mesh = dataloading_mesh["batch", "cp"]._flatten("loss_mesh")
         dense_mesh = unflatten_mesh(
             self._world_mesh,
-            ("pp", "dp_replicate", "fsdp", "tp"),
-            (self.pp, self.dp_replicate, fsdp, self.tp),
+            ("dp_replicate", "fsdp", "pp", "tp"),
+            (self.dp_replicate, fsdp, self.pp, self.tp),
         )
         sparse_mesh = unflatten_mesh(
             self._world_mesh,
-            ("pp", "dp_replicate", "efsdp", "ep", "etp"),
-            (self.pp, self.dp_replicate, efsdp, self.ep, self.etp),
+            ("dp_replicate", "efsdp", "ep", "pp", "etp"),
+            (self.dp_replicate, efsdp, self.ep, self.pp, self.etp),
         )
 
         self._global_meshes = {

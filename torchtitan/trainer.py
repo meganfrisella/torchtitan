@@ -827,6 +827,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful, Configurable):
                 base_folder=config.dump_folder,
             ) as memory_profiler,
         ):
+            iter_times = []
             data_iterator = self.batch_generator(self.dataloader)
             while self.should_continue_training():
                 start = time.perf_counter()
@@ -862,7 +863,18 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful, Configurable):
                         parallel_dims=self.parallel_dims,
                     )
                 end = time.perf_counter()
-                logger.info(f"Training iter {self.step} took {(end - start):.5f} s")
+                iter_time = end - start
+                iter_times.append(iter_time)
+                logger.info(f"Training iter {self.step} took {iter_time:.5f} s")
+
+        if len(iter_times) > 0:
+            last_n = iter_times[-5:]
+            mean = sum(last_n) / len(last_n)
+            variance = sum((t - mean) ** 2 for t in last_n) / len(last_n)
+            std = variance**0.5
+            logger.info(
+                f"Final {len(last_n)} iter times — avg: {mean:.5f} s, std: {std:.5f} s"
+            )
 
         if torch.distributed.get_rank() == 0:
             logger.info("Sleeping 2 seconds for other ranks to complete")

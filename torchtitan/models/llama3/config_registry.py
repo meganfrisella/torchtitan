@@ -43,7 +43,7 @@ def llama3_debugmodel() -> Trainer.Config:
         model_spec=model_registry("debugmodel"),
         optimizer=OptimizersContainer.Config(lr=1.5e-4),
         training=TrainingConfig(
-            local_batch_size=64,
+            local_batch_size=16,
             seq_len=128,
             steps=5,
             dtype="bfloat16",
@@ -53,7 +53,7 @@ def llama3_debugmodel() -> Trainer.Config:
         ),
         parallelism=ParallelismConfig(
             data_parallel_replicate_degree=2,
-            pipeline_parallel_degree=8,
+            pipeline_parallel_degree=2,
             pipeline_parallel_microbatch_size=4,
             pipeline_parallel_schedule="1F1B",
         ),
@@ -169,19 +169,22 @@ def llama3_70b() -> Trainer.Config:
         model_spec=model_registry("70B"),
         optimizer=OptimizersContainer.Config(lr=1.5e-4),
         training=TrainingConfig(
-            local_batch_size=32,
-            seq_len=8,
-            steps=5,
+            local_batch_size=64,
+            seq_len=512,
+            steps=8,
             dtype="bfloat16",
         ),
         dataloader=HuggingFaceTextDataLoader.Config(
             dataset="c4",
         ),
         parallelism=ParallelismConfig(
-            data_parallel_replicate_degree=2,
+            data_parallel_replicate_degree=1,
             pipeline_parallel_degree=8,
             pipeline_parallel_microbatch_size=4,
-            pipeline_parallel_schedule="1F1B",
+            pipeline_parallel_schedule="InterleavedZeroBubble",
+            # pipeline_parallel_layers_per_stage=5,
+            # pipeline_parallel_first_stage_less_layers=0,
+            # pipeline_parallel_last_stage_less_layers=0,
         ),
         checkpoint=CheckpointManager.Config(enable=False),
         activation_checkpoint=ActivationCheckpointConfig(

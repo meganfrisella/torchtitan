@@ -10,10 +10,6 @@ import torch
 import torch.nn as nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, fully_shard, MixedPrecisionPolicy
-from torch.distributed.fsdp._fully_shard._fsdp_common import (
-    FSDPMeshInfo,
-    ShardPlacementResult,
-)
 from torch.distributed.tensor import Partial, Replicate, Shard
 from torch.distributed.tensor.parallel import (
     ColwiseParallel,
@@ -435,32 +431,27 @@ def apply_fsdp(
                     shard_placement_fn=_experts_shard_placement_fn,
                 )
             else:
-                # ep_degree > 1: per-param mesh
+                # ep_degree > 1: shard experts separately on edp_mesh, then
+                # shard the rest of the block on dp_mesh.
                 assert edp_mesh is not None
-                edp_mesh_info = FSDPMeshInfo(mesh=edp_mesh, shard_mesh_dim=0)
-                dp_mesh_info = FSDPMeshInfo(mesh=dp_mesh, shard_mesh_dim=0)
+                efsdp_config = fsdp_config.copy()
+                efsdp_config["mesh"] = edp_mesh
 
-                def _shard_placement_fn(
-                    param: nn.Parameter,
-                    _expert_params: set = expert_params,
-                    _expert_placement: Shard = expert_shard_placement,
-                    _edp_mesh_info: FSDPMeshInfo = edp_mesh_info,
-                    _dp_mesh_info: FSDPMeshInfo = dp_mesh_info,
-                ) -> ShardPlacementResult:
-                    if param in _expert_params:
-                        return ShardPlacementResult(
-                            placement=_expert_placement, mesh_info=_edp_mesh_info
-                        )
-                    else:
-                        return ShardPlacementResult(
-                            placement=Shard(0), mesh_info=_dp_mesh_info
-                        )
+                expert_placement_fn = None
+                if expert_shard_placement == Shard(1):
+                    expert_placement_fn = lambda param: Shard(1)
 
+                # pyrefly: ignore [no-matching-overload]
+                fully_shard(
+                    transformer_block.moe.experts,
+                    **efsdp_config,
+                    reshard_after_forward=reshard_after_forward,
+                    shard_placement_fn=expert_placement_fn,
+                )
                 fully_shard(
                     transformer_block,
                     **fsdp_config,
                     reshard_after_forward=reshard_after_forward,
-                    shard_placement_fn=_shard_placement_fn,
                 )
         else:
             fully_shard(

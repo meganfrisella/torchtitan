@@ -240,6 +240,13 @@ def build_pipeline_schedule(
         f"with {n_microbatches} microbatches and {num_total_stages} stages."
     )
 
+    if hasattr(schedule, "pipeline_order"):
+        pp_rank = torch.distributed.get_rank(stages[0].group)
+        rank_ops = schedule.pipeline_order.get(pp_rank, [])
+        logger.info(
+            f"PP rank {pp_rank} pipeline operations ({len(rank_ops)} steps): {rank_ops}"
+        )
+
     if parallelism.pipeline_parallel_expert_parallel_overlap and isinstance(
         schedule, ScheduleDualPipeV
     ):
