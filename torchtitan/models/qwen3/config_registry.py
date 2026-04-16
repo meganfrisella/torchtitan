@@ -611,6 +611,63 @@ def qwen3_9b_pp8_dp2_interleaved1f1b() -> Trainer.Config:
     )
 
 
+def qwen3_9b_pp8_dp2_zerobubble() -> Trainer.Config:
+    """9B-A3B, pp=8 dp=2, InterleavedZeroBubble, world_size=16 (NGPU=8, NNODE=2)."""
+    return Trainer.Config(
+        hf_assets_path="./assets/hf/Qwen3-8B",
+        model_spec=model_registry("9B-A3B"),
+        dataloader=HuggingFaceTextDataLoader.Config(dataset="c4"),
+        optimizer=OptimizersContainer.Config(lr=8e-4),
+        lr_scheduler=LRSchedulersContainer.Config(warmup_steps=2),
+        training=TrainingConfig(
+            global_batch_size=256,
+            local_batch_size=128,
+            seq_len=512,
+            steps=8,
+            dtype="bfloat16",
+        ),
+        parallelism=ParallelismConfig(
+            expert_parallel_degree=2,
+            expert_tensor_parallel_degree=1,
+            pipeline_parallel_degree=8,
+            pipeline_parallel_schedule="InterleavedZeroBubble",
+            pipeline_parallel_microbatch_size=8,
+            data_parallel_shard_degree=-1,
+        ),
+        checkpoint=CheckpointManager.Config(enable=False),
+        activation_checkpoint=ActivationCheckpointConfig(mode="none"),
+        compile=CompileConfig(enable=True),
+    )
+
+
+def qwen3_9b_pp8_dp2_dualpipe() -> Trainer.Config:
+    """9B-A3B, pp=8 dp=2, DualPipeV, world_size=16 (NGPU=8, NNODE=2)."""
+    return Trainer.Config(
+        hf_assets_path="./assets/hf/Qwen3-8B",
+        model_spec=model_registry("9B-A3B"),
+        dataloader=HuggingFaceTextDataLoader.Config(dataset="c4"),
+        optimizer=OptimizersContainer.Config(lr=8e-4),
+        lr_scheduler=LRSchedulersContainer.Config(warmup_steps=2),
+        training=TrainingConfig(
+            global_batch_size=256,
+            local_batch_size=128,
+            seq_len=512,
+            steps=8,
+            dtype="bfloat16",
+        ),
+        parallelism=ParallelismConfig(
+            expert_parallel_degree=2,
+            expert_tensor_parallel_degree=1,
+            pipeline_parallel_degree=8,
+            pipeline_parallel_schedule="DualPipeV",
+            pipeline_parallel_microbatch_size=8,
+            data_parallel_shard_degree=-1,
+        ),
+        checkpoint=CheckpointManager.Config(enable=False),
+        activation_checkpoint=ActivationCheckpointConfig(mode="none"),
+    )
+
+
 def qwen3_9b_pp8_dp4_1f1b() -> Trainer.Config:
     """9B-A3B, pp=8 dp=4, 1F1B, world_size=32 (NGPU=8, NNODE=4)."""
     return Trainer.Config(
@@ -639,6 +696,33 @@ def qwen3_9b_pp8_dp4_1f1b() -> Trainer.Config:
         compile=CompileConfig(enable=True),
     )
 
+def qwen3_9b_pp8_dp4_1f1b_b4() -> Trainer.Config:
+    """9B-A3B, pp=8 dp=4, 1F1B, world_size=32 (NGPU=8, NNODE=4)."""
+    return Trainer.Config(
+        hf_assets_path="./assets/hf/Qwen3-8B",
+        model_spec=model_registry("9B-A3B"),
+        dataloader=HuggingFaceTextDataLoader.Config(dataset="c4"),
+        optimizer=OptimizersContainer.Config(lr=8e-4),
+        lr_scheduler=LRSchedulersContainer.Config(warmup_steps=2),
+        training=TrainingConfig(
+            global_batch_size=256,
+            local_batch_size=64,
+            seq_len=512,
+            steps=8,
+            dtype="bfloat16",
+        ),
+        parallelism=ParallelismConfig(
+            expert_parallel_degree=4,
+            expert_tensor_parallel_degree=1,
+            pipeline_parallel_degree=8,
+            pipeline_parallel_schedule="1F1B",
+            pipeline_parallel_microbatch_size=4,
+            data_parallel_shard_degree=-1,
+        ),
+        checkpoint=CheckpointManager.Config(enable=False),
+        activation_checkpoint=ActivationCheckpointConfig(mode="none"),
+        compile=CompileConfig(enable=True),
+    )
 
 def qwen3_9b_pp8_dp4_interleaved1f1b() -> Trainer.Config:
     """9B-A3B, pp=8 dp=4, Interleaved1F1B, world_size=32 (NGPU=8, NNODE=4)."""
@@ -668,6 +752,144 @@ def qwen3_9b_pp8_dp4_interleaved1f1b() -> Trainer.Config:
         compile=CompileConfig(enable=True),
     )
 
+def qwen3_9b_pp8_dp4_interleaved1f1b_b4() -> Trainer.Config:
+    """9B-A3B, pp=8 dp=4, Interleaved1F1B, world_size=32 (NGPU=8, NNODE=4)."""
+    return Trainer.Config(
+        hf_assets_path="./assets/hf/Qwen3-8B",
+        model_spec=model_registry("9B-A3B"),
+        dataloader=HuggingFaceTextDataLoader.Config(dataset="c4"),
+        optimizer=OptimizersContainer.Config(lr=8e-4),
+        lr_scheduler=LRSchedulersContainer.Config(warmup_steps=2),
+        training=TrainingConfig(
+            global_batch_size=256,
+            local_batch_size=64,
+            seq_len=512,
+            steps=8,
+            dtype="bfloat16",
+        ),
+        parallelism=ParallelismConfig(
+            expert_parallel_degree=4,
+            expert_tensor_parallel_degree=1,
+            pipeline_parallel_degree=8,
+            pipeline_parallel_schedule="Interleaved1F1B",
+            pipeline_parallel_microbatch_size=4,
+            data_parallel_shard_degree=-1,
+        ),
+        checkpoint=CheckpointManager.Config(enable=False),
+        activation_checkpoint=ActivationCheckpointConfig(mode="none"),
+        compile=CompileConfig(enable=True),
+    )
+
+def qwen3_9b_pp8_dp4_zerobubble() -> Trainer.Config:
+    """9B-A3B, pp=8 dp=4, InterleavedZeroBubble, world_size=32 (NGPU=8, NNODE=4)."""
+    return Trainer.Config(
+        hf_assets_path="./assets/hf/Qwen3-8B",
+        model_spec=model_registry("9B-A3B"),
+        dataloader=HuggingFaceTextDataLoader.Config(dataset="c4"),
+        optimizer=OptimizersContainer.Config(lr=8e-4),
+        lr_scheduler=LRSchedulersContainer.Config(warmup_steps=2),
+        training=TrainingConfig(
+            global_batch_size=512,
+            local_batch_size=128,
+            seq_len=512,
+            steps=8,
+            dtype="bfloat16",
+        ),
+        parallelism=ParallelismConfig(
+            expert_parallel_degree=4,
+            expert_tensor_parallel_degree=1,
+            pipeline_parallel_degree=8,
+            pipeline_parallel_schedule="InterleavedZeroBubble",
+            pipeline_parallel_microbatch_size=8,
+            data_parallel_shard_degree=-1,
+        ),
+        checkpoint=CheckpointManager.Config(enable=False),
+        activation_checkpoint=ActivationCheckpointConfig(mode="none"),
+        compile=CompileConfig(enable=True),
+    )
+
+def qwen3_9b_pp8_dp4_zerobubble_b4() -> Trainer.Config:
+    """9B-A3B, pp=8 dp=4, InterleavedZeroBubble, world_size=32 (NGPU=8, NNODE=4)."""
+    return Trainer.Config(
+        hf_assets_path="./assets/hf/Qwen3-8B",
+        model_spec=model_registry("9B-A3B"),
+        dataloader=HuggingFaceTextDataLoader.Config(dataset="c4"),
+        optimizer=OptimizersContainer.Config(lr=8e-4),
+        lr_scheduler=LRSchedulersContainer.Config(warmup_steps=2),
+        training=TrainingConfig(
+            global_batch_size=256,
+            local_batch_size=64,
+            seq_len=512,
+            steps=8,
+            dtype="bfloat16",
+        ),
+        parallelism=ParallelismConfig(
+            expert_parallel_degree=4,
+            expert_tensor_parallel_degree=1,
+            pipeline_parallel_degree=8,
+            pipeline_parallel_schedule="InterleavedZeroBubble",
+            pipeline_parallel_microbatch_size=4,
+            data_parallel_shard_degree=-1,
+        ),
+        checkpoint=CheckpointManager.Config(enable=False),
+        activation_checkpoint=ActivationCheckpointConfig(mode="none"),
+        compile=CompileConfig(enable=True),
+    )
+
+
+def qwen3_9b_pp8_dp4_dualpipe() -> Trainer.Config:
+    """9B-A3B, pp=8 dp=4, DualPipeV, world_size=32 (NGPU=8, NNODE=4)."""
+    return Trainer.Config(
+        hf_assets_path="./assets/hf/Qwen3-8B",
+        model_spec=model_registry("9B-A3B"),
+        dataloader=HuggingFaceTextDataLoader.Config(dataset="c4"),
+        optimizer=OptimizersContainer.Config(lr=8e-4),
+        lr_scheduler=LRSchedulersContainer.Config(warmup_steps=2),
+        training=TrainingConfig(
+            global_batch_size=512,
+            local_batch_size=128,
+            seq_len=512,
+            steps=8,
+            dtype="bfloat16",
+        ),
+        parallelism=ParallelismConfig(
+            expert_parallel_degree=4,
+            expert_tensor_parallel_degree=1,
+            pipeline_parallel_degree=8,
+            pipeline_parallel_schedule="DualPipeV",
+            pipeline_parallel_microbatch_size=8,
+            data_parallel_shard_degree=-1,
+        ),
+        checkpoint=CheckpointManager.Config(enable=False),
+        activation_checkpoint=ActivationCheckpointConfig(mode="none"),
+    )
+
+def qwen3_9b_pp8_dp4_dualpipe() -> Trainer.Config:
+    """9B-A3B, pp=8 dp=4, DualPipeV, world_size=32 (NGPU=8, NNODE=4)."""
+    return Trainer.Config(
+        hf_assets_path="./assets/hf/Qwen3-8B",
+        model_spec=model_registry("9B-A3B"),
+        dataloader=HuggingFaceTextDataLoader.Config(dataset="c4"),
+        optimizer=OptimizersContainer.Config(lr=8e-4),
+        lr_scheduler=LRSchedulersContainer.Config(warmup_steps=2),
+        training=TrainingConfig(
+            global_batch_size=256,
+            local_batch_size=64,
+            seq_len=512,
+            steps=8,
+            dtype="bfloat16",
+        ),
+        parallelism=ParallelismConfig(
+            expert_parallel_degree=4,
+            expert_tensor_parallel_degree=1,
+            pipeline_parallel_degree=4,
+            pipeline_parallel_schedule="DualPipeV",
+            pipeline_parallel_microbatch_size=8,
+            data_parallel_shard_degree=-1,
+        ),
+        checkpoint=CheckpointManager.Config(enable=False),
+        activation_checkpoint=ActivationCheckpointConfig(mode="none"),
+    )
 
 def qwen3_30b() -> Trainer.Config:
     return Trainer.Config(

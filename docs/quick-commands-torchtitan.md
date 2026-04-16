@@ -21,8 +21,8 @@ export WORKER3_PRIVATE_IP=xxx
 
 ```bash
 ./scripts/run-qwen-ec2.sh \
-  --nnode 4 --ngpu 2 \
-  --module qwen3 --config qwen3_9b_pp2_dp4
+  --nnode 2 --ngpu 8 \
+  --module qwen3 --config qwen3_9b_pp8_dp2_dualpipe
 ```
 
 Add `--log-to-file` to tee output to `out/ec2/<config>_<timestamp>.log`.
