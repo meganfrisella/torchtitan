@@ -16,6 +16,7 @@
 #   --log-rank RANKS  LOG_RANK value for run_train.sh (default: $LOG_RANK or 0)
 #   --log-to-file     Tee all output to out/ec2/<config>_<timestamp>.log
 #   --out-dir DIR     Directory for log files (default: out/ec2)
+#   --                Forward remaining args to torchtitan.train inside the container
 #
 # Reads from environment: SSH_KEY, HEAD_PUBLIC_IP, HEAD_PRIVATE_IP,
 #   WORKER1_PRIVATE_IP, WORKER2_PRIVATE_IP, ... (first NNODE-1 are used)
@@ -31,6 +32,7 @@ NSIGHT=false
 LOG_RANK="${LOG_RANK:-0}"
 LOG_TO_FILE=false
 OUT_DIR="out/ec2"
+TRAIN_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -43,6 +45,7 @@ while [[ $# -gt 0 ]]; do
         --log-rank)     LOG_RANK="$2";     shift 2 ;;
         --log-to-file)  LOG_TO_FILE=true;  shift ;;
         --out-dir)      OUT_DIR="$2";      shift 2 ;;
+        --)             shift; TRAIN_ARGS=("$@"); break ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -70,6 +73,11 @@ SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no"
 PROXY="ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP"
 TRAIN_SCRIPT="$($NSIGHT && echo './run_train_nsys.sh' || echo './run_train.sh')"
 
+TRAIN_ARGS_QUOTED=""
+if ((${#TRAIN_ARGS[@]})); then
+    TRAIN_ARGS_QUOTED=$(printf '%q ' "${TRAIN_ARGS[@]}")
+fi
+
 # Create output dirs
 $SSH ubuntu@$HEAD_PUBLIC_IP \
   "docker exec torchtitan mkdir -p /workspace/torchtitan/out"
@@ -80,30 +88,12 @@ for WORKER_IP in $WORKERS; do
 done
 
 # Launch head
-$SSH ubuntu@$HEAD_PUBLIC_IP \
-  "docker exec -w /workspace/torchtitan \
-   -e NCCL_SOCKET_IFNAME=ens32 \
-   -e GLOO_SOCKET_IFNAME=ens32 \
-   -e NCCL_PROTO=simple \
-   torchtitan \
-   bash -c 'echo HEAD; pwd; ls -l $TRAIN_SCRIPT; \
-     NNODE=$NNODE NGPU=$NGPU LOG_RANK=$LOG_RANK MODULE=$MODULE CONFIG=$CONFIG \
-     NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=$MASTER_PORT \
-     $TRAIN_SCRIPT'" &
+$SSH ubuntu@$HEAD_PUBLIC_IP   "docker exec -w /workspace/torchtitan    -e NCCL_SOCKET_IFNAME=ens32    -e GLOO_SOCKET_IFNAME=ens32    -e NCCL_PROTO=simple    torchtitan    bash -lc 'echo HEAD; pwd; ls -l $TRAIN_SCRIPT;      NNODE=$NNODE NGPU=$NGPU LOG_RANK=$LOG_RANK MODULE=$MODULE CONFIG=$CONFIG      NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=$MASTER_PORT      $TRAIN_SCRIPT $TRAIN_ARGS_QUOTED'" &
 
 # Launch workers
 NODE_RANK=1
 for WORKER_IP in $WORKERS; do
-  $SSH -o "$PROXY" ubuntu@$WORKER_IP \
-    "docker exec -w /workspace/torchtitan \
-     -e NCCL_SOCKET_IFNAME=ens32 \
-     -e GLOO_SOCKET_IFNAME=ens32 \
-     -e NCCL_PROTO=simple \
-     torchtitan \
-     bash -c 'echo WORKER; pwd; ls -l $TRAIN_SCRIPT; \
-       NNODE=$NNODE NGPU=$NGPU LOG_RANK=$LOG_RANK MODULE=$MODULE CONFIG=$CONFIG \
-       NODE_RANK=$NODE_RANK MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=$MASTER_PORT \
-       $TRAIN_SCRIPT'" &
+  $SSH -o "$PROXY" ubuntu@$WORKER_IP     "docker exec -w /workspace/torchtitan      -e NCCL_SOCKET_IFNAME=ens32      -e GLOO_SOCKET_IFNAME=ens32      -e NCCL_PROTO=simple      torchtitan      bash -lc 'echo WORKER; pwd; ls -l $TRAIN_SCRIPT;        NNODE=$NNODE NGPU=$NGPU LOG_RANK=$LOG_RANK MODULE=$MODULE CONFIG=$CONFIG        NODE_RANK=$NODE_RANK MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=$MASTER_PORT        $TRAIN_SCRIPT $TRAIN_ARGS_QUOTED'" &
   NODE_RANK=$((NODE_RANK + 1))
 done
 

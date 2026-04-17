@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """Run a configurable Torchtitan Qwen EC2 sweep.
 
-Default sweep:
-  SCHEDULE in {1f1b, interleaved1f1b, zerobubble, dualpipe}
-  PP in {4, 8}
-  DP in {1, 2, 4}
+This runner now uses a small set of generic Qwen3 9B configs and passes
+PP/DP/EP/schedule/sequence-length/microbatch settings as runtime overrides.
 
-Commands look like:
-  ./scripts/run-qwen-ec2.sh \
-    --nnode DP --ngpu PP \
-    --module qwen3 --config qwen3_9b_{SCHEDULE}_pp{PP}_dp{DP}
+Config selection:
+  - all zero levels use qwen3_9b
+  - ZeRO behavior is injected entirely via runtime overrides
 
 Each experiment writes stdout/stderr to a separate local log file.
 Failures are recorded and reported at the end without stopping the sweep.
@@ -28,8 +25,53 @@ from pathlib import Path
 
 
 DEFAULT_PP_VALUES = (4, 8)
-DEFAULT_DP_VALUES = (1, 2, 4)
+DEFAULT_PARALLEL_VALUES = (1, 2, 4)
 DEFAULT_SCHEDULES = ("1f1b", "interleaved1f1b", "zerobubble", "dualpipe")
+DEFAULT_ZERO_LEVELS = ("none", "zero2", "zero3")
+DEFAULT_BASE_CONFIG = "qwen3_9b"
+RUNTIME_SCHEDULES = {
+    "1f1b": "1F1B",
+    "interleaved1f1b": "Interleaved1F1B",
+    "zerobubble": "InterleavedZeroBubble",
+    "dualpipe": "DualPipeV",
+}
+
+
+def _build_config_name() -> str:
+    return DEFAULT_BASE_CONFIG
+
+
+
+def _is_valid_combination(*, schedule: str, parallel_degree: int, mode: str, zero_level: str) -> bool:
+    if mode == "ep":
+        return zero_level == "none"
+    return (zero_level == "none") or (
+        zero_level != "none" and schedule == "1f1b" and parallel_degree in (2, 4)
+    )
+
+
+
+def _local_batch_size(pp: int, mb_size: int) -> int:
+    return pp * 2 * mb_size
+
+
+
+def _global_batch_size(pp: int, parallel_degree: int, mode: str, mb_size: int) -> int:
+    return _local_batch_size(pp, mb_size) * parallel_degree
+
+
+
+def _runtime_dp_settings(*, mode: str, parallel_degree: int, zero_level: str) -> tuple[int, int, str | None, int]:
+    if mode == "ep":
+        return 1, -1 if parallel_degree > 1 else 1, None, parallel_degree
+    if zero_level == "none":
+        return parallel_degree, 1, None, parallel_degree
+    if zero_level == "zero2":
+        return 1, parallel_degree, "never", parallel_degree
+    if zero_level == "zero3":
+        return 1, parallel_degree, "always", parallel_degree
+    raise ValueError(f"Unsupported zero level: {zero_level}")
+
 
 
 def _build_command(
@@ -37,36 +79,112 @@ def _build_command(
     *,
     schedule: str,
     pp: int,
-    dp: int,
+    parallel_degree: int,
+    mode: str,
+    zero_level: str,
     module: str,
+    seq_len: int,
+    mb_size: int,
     extra_args: list[str],
 ) -> list[str]:
-    config = f"qwen3_9b_pp{pp}_dp{dp}_{schedule}"
+    config = _build_config_name()
+    dp_replicate, dp_shard, reshard_after_forward, nnode = _runtime_dp_settings(
+        mode=mode,
+        parallel_degree=parallel_degree,
+        zero_level=zero_level,
+    )
+    ep_degree = parallel_degree if mode == "ep" else 1
     log_rank = ",".join(str(i) for i in range(pp))
+    train_args = [
+        "--parallelism.pipeline_parallel_degree",
+        str(pp),
+        "--parallelism.expert_parallel_degree",
+        str(ep_degree),
+        "--parallelism.pipeline_parallel_schedule",
+        RUNTIME_SCHEDULES[schedule],
+        "--parallelism.pipeline_parallel_microbatch_size",
+        str(mb_size),
+        "--parallelism.data_parallel_replicate_degree",
+        str(dp_replicate),
+        "--parallelism.data_parallel_shard_degree",
+        str(dp_shard),
+        "--training.seq_len",
+        str(seq_len),
+        "--training.local_batch_size",
+        str(_local_batch_size(pp, mb_size)),
+        "--training.global_batch_size",
+        str(_global_batch_size(pp, parallel_degree, mode, mb_size)),
+    ]
+    if reshard_after_forward is not None:
+        train_args.extend([
+            "--parallelism.fsdp_reshard_after_forward",
+            reshard_after_forward,
+        ])
     command = [
         str(script_path),
-        "--nnode", str(dp),
-        "--ngpu", str(pp),
-        "--module", module,
-        "--config", config,
-        "--log-rank", log_rank,
+        "--nnode",
+        str(nnode),
+        "--ngpu",
+        str(pp),
+        "--module",
+        module,
+        "--config",
+        config,
+        "--log-rank",
+        log_rank,
+        "--",
+        *train_args,
     ]
     command.extend(extra_args)
     return command
+
 
 
 def _default_log_dir(script_path: Path) -> Path:
     return script_path.parent.parent / "out" / "ec2_sweeps"
 
 
-def _log_path(log_dir: Path, *, schedule: str, pp: int, dp: int) -> Path:
+
+def _log_path(
+    log_dir: Path,
+    *,
+    schedule: str,
+    pp: int,
+    parallel_degree: int,
+    mode: str,
+    zero_level: str,
+) -> Path:
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    return log_dir / f"qwen3_9b_pp{pp}_dp{dp}__{schedule}_{timestamp}.log"
+    variant = mode if mode == "ep" else zero_level
+    return log_dir / f"qwen3_9b_pp{pp}_{mode}{parallel_degree}__{variant}__{schedule}_{timestamp}.log"
+
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Sweep Torchtitan scripts/run-qwen-ec2.sh over schedule, PP, and DP values."
+        description="Sweep Torchtitan scripts/run-qwen-ec2.sh over EP or DP/ZeRO runtime overrides."
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--dp",
+        nargs="+",
+        type=int,
+        default=None,
+        help="DP values to sweep for DP/ZeRO runs. Cannot be used with --ep.",
+    )
+    group.add_argument(
+        "--ep",
+        nargs="+",
+        type=int,
+        default=None,
+        help="EP values to sweep for EP runs. Cannot be used with --dp.",
+    )
+    parser.add_argument(
+        "--zero-levels",
+        nargs="+",
+        default=list(DEFAULT_ZERO_LEVELS),
+        choices=list(DEFAULT_ZERO_LEVELS),
+        help="ZeRO levels to sweep. For --ep, only 'none' is valid. Default: none zero2 zero3",
     )
     parser.add_argument(
         "--schedules",
@@ -82,13 +200,8 @@ def parse_args() -> argparse.Namespace:
         default=list(DEFAULT_PP_VALUES),
         help="PP values to sweep. Default: 4 8",
     )
-    parser.add_argument(
-        "--dp-values",
-        nargs="+",
-        type=int,
-        default=list(DEFAULT_DP_VALUES),
-        help="DP values to sweep. Default: 1 2 4",
-    )
+    parser.add_argument("--seq-len", type=int, default=512, help="Sequence length runtime override. Default: 512")
+    parser.add_argument("--mb-size", type=int, default=8, help="Pipeline microbatch size runtime override. Default: 8")
     parser.add_argument(
         "--module",
         default="qwen3",
@@ -112,9 +225,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "extra_args",
         nargs=argparse.REMAINDER,
-        help="Extra arguments forwarded to run-qwen-ec2.sh. Prefix with '--'.",
+        help="Extra arguments forwarded to torchtitan.train. Prefix with '--'.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.dp is None and args.ep is None:
+        args.ep = list(DEFAULT_PARALLEL_VALUES)
+
+    return args
+
 
 
 def main() -> int:
@@ -124,6 +243,9 @@ def main() -> int:
         print(f"Runner script not found: {script_path}", file=sys.stderr)
         return 1
 
+    mode = "dp" if args.dp is not None else "ep"
+    parallel_values = args.dp if args.dp is not None else args.ep
+
     log_dir = Path(args.log_dir).resolve() if args.log_dir else _default_log_dir(script_path)
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -131,22 +253,69 @@ def main() -> int:
     if extra_args and extra_args[0] == "--":
         extra_args = extra_args[1:]
 
-    combinations = list(itertools.product(args.schedules, args.pp_values, args.dp_values))
+    raw_combinations = itertools.product(
+        args.zero_levels,
+        args.schedules,
+        args.pp_values,
+        parallel_values,
+    )
+    combinations = [
+        (zero_level, schedule, pp, parallel_degree)
+        for zero_level, schedule, pp, parallel_degree in raw_combinations
+        if _is_valid_combination(
+            schedule=schedule,
+            parallel_degree=parallel_degree,
+            mode=mode,
+            zero_level=zero_level,
+        )
+    ]
     total = len(combinations)
+    if total == 0:
+        print("No valid sweep combinations generated.", file=sys.stderr)
+        if mode == "ep":
+            print(
+                "EP mode only supports --zero-levels none. Example: --ep 1 2 4 --zero-levels none",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "DP mode supports plain DP with --zero-levels none, and ZeRO configs with --zero-levels zero2 zero3 (ZeRO requires --schedules 1f1b and --dp 2 or 4).",
+                file=sys.stderr,
+            )
+            print(
+                "Example plain DP: --dp 1 2 4 --schedules 1f1b --zero-levels none",
+                file=sys.stderr,
+            )
+        return 1
     failures: list[dict[str, object]] = []
 
-    for index, (schedule, pp, dp) in enumerate(combinations, start=1):
+    for index, (zero_level, schedule, pp, parallel_degree) in enumerate(combinations, start=1):
         command = _build_command(
             script_path,
             schedule=schedule,
             pp=pp,
-            dp=dp,
+            parallel_degree=parallel_degree,
+            mode=mode,
+            zero_level=zero_level,
             module=args.module,
+            seq_len=args.seq_len,
+            mb_size=args.mb_size,
             extra_args=extra_args,
         )
-        log_path = _log_path(log_dir, schedule=schedule, pp=pp, dp=dp)
+        config = _build_config_name()
+        log_path = _log_path(
+            log_dir,
+            schedule=schedule,
+            pp=pp,
+            parallel_degree=parallel_degree,
+            mode=mode,
+            zero_level=zero_level,
+        )
 
-        print(f"[{index}/{total}] schedule={schedule} pp={pp} dp={dp}")
+        print(
+            f"[{index}/{total}] mode={mode} zero_level={zero_level} schedule={schedule} "
+            f"pp={pp} parallel_degree={parallel_degree} config={config} mb={args.mb_size} seq_len={args.seq_len}"
+        )
         print("  " + " ".join(shlex.quote(part) for part in command))
         print(f"  log={log_path}")
 
@@ -167,23 +336,32 @@ def main() -> int:
             failures.append(
                 {
                     "index": index,
+                    "mode": mode,
+                    "zero_level": zero_level,
                     "schedule": schedule,
                     "pp": pp,
-                    "dp": dp,
+                    "parallel_degree": parallel_degree,
+                    "config": config,
                     "returncode": result.returncode,
                     "command": command,
                     "log_path": str(log_path),
                 }
             )
-            print(f"  command failed with exit code {result.returncode}, continuing", file=sys.stderr)
+            print(
+                f"  command failed with exit code {result.returncode}, continuing",
+                file=sys.stderr,
+            )
         except KeyboardInterrupt:
             print("\nSweep interrupted by user.", file=sys.stderr)
             failures.append(
                 {
                     "index": index,
+                    "mode": mode,
+                    "zero_level": zero_level,
                     "schedule": schedule,
                     "pp": pp,
-                    "dp": dp,
+                    "parallel_degree": parallel_degree,
+                    "config": config,
                     "returncode": "interrupted",
                     "command": command,
                     "log_path": str(log_path),
@@ -194,9 +372,12 @@ def main() -> int:
             failures.append(
                 {
                     "index": index,
+                    "mode": mode,
+                    "zero_level": zero_level,
                     "schedule": schedule,
                     "pp": pp,
-                    "dp": dp,
+                    "parallel_degree": parallel_degree,
+                    "config": config,
                     "returncode": "exception",
                     "command": command,
                     "log_path": str(log_path),
@@ -210,8 +391,10 @@ def main() -> int:
         print("\nSweep completed with failures:", file=sys.stderr)
         for failure in failures:
             print(
-                f"  [{failure['index']}/{total}] schedule={failure['schedule']} pp={failure['pp']} dp={failure['dp']} "
-                f"status={failure['returncode']}",
+                f"  [{failure['index']}/{total}] mode={failure['mode']} "
+                f"zero_level={failure['zero_level']} schedule={failure['schedule']} "
+                f"pp={failure['pp']} parallel_degree={failure['parallel_degree']} "
+                f"config={failure['config']} status={failure['returncode']}",
                 file=sys.stderr,
             )
             print(

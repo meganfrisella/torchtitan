@@ -22,7 +22,16 @@ export WORKER3_PRIVATE_IP=xxx
 ```bash
 ./scripts/run-qwen-ec2.sh \
   --nnode 2 --ngpu 8 \
-  --module qwen3 --config qwen3_9b_pp8_dp2_dualpipe
+  --module qwen3 --config qwen3_9b -- \
+  --parallelism.pipeline_parallel_degree 8 \
+  --parallelism.expert_parallel_degree 1 \
+  --parallelism.pipeline_parallel_schedule DualPipeV \
+  --parallelism.pipeline_parallel_microbatch_size 8 \
+  --parallelism.data_parallel_replicate_degree 2 \
+  --parallelism.data_parallel_shard_degree 1 \
+  --training.seq_len 512 \
+  --training.local_batch_size 128 \
+  --training.global_batch_size 256
 ```
 
 Add `--log-to-file` to tee output to `out/ec2/<config>_<timestamp>.log`.

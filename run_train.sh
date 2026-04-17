@@ -36,18 +36,26 @@ MASTER_PORT=${MASTER_PORT:-"29500"}
 NODE_RANK=${NODE_RANK:-"0"}
 
 TORCHFT_LIGHTHOUSE=${TORCHFT_LIGHTHOUSE:-"http://localhost:29510"}
+TRAIN_ARGS_B64=${TRAIN_ARGS_B64:-""}
+EXTRA_ARGS=()
+if [ -n "$TRAIN_ARGS_B64" ]; then
+    TRAIN_ARGS_DECODED=$(printf %s "$TRAIN_ARGS_B64" | base64 -d)
+    if [ -n "$TRAIN_ARGS_DECODED" ]; then
+        eval "EXTRA_ARGS=($TRAIN_ARGS_DECODED)"
+    fi
+fi
 
 if [ -n "$COMM_MODE" ]; then
     # Communication mode specified: validate configuration or run in debug mode
     echo "Running with comm_mode=${COMM_MODE}"
-    NGPU="${NGPU}" LOCAL_RANK=0 python3 -m torchtitan.train --module ${MODULE} --config ${CONFIG} "$@" --comm.mode=${COMM_MODE} --training.steps 1
+    NGPU="${NGPU}" LOCAL_RANK=0 python3 -m torchtitan.train --module ${MODULE} --config ${CONFIG} "$@" "${EXTRA_ARGS[@]}" --comm.mode=${COMM_MODE} --training.steps 1
 else
     # Normal training with torchrun
     # PYTORCH_ALLOC_CONF="expandable_segments:True" \
     # TORCHFT_LIGHTHOUSE=${TORCHFT_LIGHTHOUSE} \
     # torchrun --nproc_per_node=${NGPU} --rdzv_backend c10d --rdzv_endpoint="localhost:0" \
     # --local-ranks-filter ${LOG_RANK} --role rank --tee 3 \
-    # -m torchtitan.train --module ${MODULE} --config ${CONFIG} "$@"
+    # -m torchtitan.train --module ${MODULE} --config ${CONFIG} "$@" "${EXTRA_ARGS[@]}"
 
     # Multi-node training without nsys
     PYTORCH_ALLOC_CONF="expandable_segments:True" \
@@ -55,5 +63,5 @@ else
     torchrun --nnodes=${NNODE} --nproc_per_node=${NGPU} \
     --node_rank=${NODE_RANK} --master_addr=${MASTER_ADDR} --master_port=${MASTER_PORT} \
     --local-ranks-filter ${LOG_RANK} --role rank --tee 3 \
-    -m torchtitan.train --module ${MODULE} --config ${CONFIG} "$@"
+    -m torchtitan.train --module ${MODULE} --config ${CONFIG} "$@" "${EXTRA_ARGS[@]}"
 fi

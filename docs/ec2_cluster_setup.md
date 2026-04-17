@@ -1,6 +1,6 @@
 # EC2 Cluster Setup for TorchTitan
 
-Launches a 2-node torchtitan cluster using AWS CLI directly. Uses the same AMI
+Launches a 4-node torchtitan cluster using AWS CLI directly. Uses the same AMI
 and networking setup as the piper cluster (`ami-03ab193c1b65d3fc7`), which has
 Docker, EFA drivers, and aws-ofi-nccl pre-installed.
 
@@ -21,37 +21,79 @@ Set these before running any commands:
 export PATH_TO_TORCHTITAN=/m-coriander/coriander/mfris/torchtitan
 export REGION=us-east-2
 export AMI=ami-03ab193c1b65d3fc7
-export INSTANCE_TYPE=p4d.24xlarge
-export SUBNET=subnet-0572b36ed0e0551f2  # public subnet (all NICs, both nodes)
+export INSTANCE_TYPE=p6-b200.48xlarge #p4d.24xlarge # p5e.48xlarge
+export SUBNET=subnet-0e27513d97f7aa13f  # public subnet (all NICs, all nodes)
 export SG=sg-0687f77bfa22e1791
 export KEY=ray-autoscaler_us-east-2
-export CR_ID=$CR_ID  # set by Step 0, or hardcode: cr-XXXXXXXXXXXXXXXXX
+export CR_ID=cr-05530f9da9f836618  # set by Step 0, or hardcode: cr-XXXXXXXXXXXXXXXXX
 export PG_NAME=piper-cluster-pg  # create once: aws ec2 create-placement-group --group-name $PG_NAME --strategy cluster --region $REGION
 export SSH_KEY=~/.ssh/ray-autoscaler_us-east-2.pem
 export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 export ECR_REGISTRY=${ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com
-export IMAGE=${ECR_REGISTRY}/torchtitan-70b:latest  # Option A (ECR); for Option B use: export IMAGE=mfris/torchtitan-70b:latest
+# export IMAGE=${ECR_REGISTRY}/torchtitan-70b:latest  # Option A (ECR); for Option B use:
+export IMAGE=mfris/torchtitan-70b:latest
 ```
 
 ---
 
-## Test Locally (requires 4x GPU)
+## Rebuild and Push
 
-Before deploying to the cluster, verify the image and config work on a single node:
+Only needed when dependencies change (i.e. `pyproject.toml` changes). Code changes
+don't require a rebuild — torchtitan source is mounted at runtime.
+
+```bash
+docker build -t mfris/torchtitan-70b:latest $PATH_TO_TORCHTITAN
+docker push mfris/torchtitan-70b:latest
+```
+
+---
+
+## Test Locally
+
+Before deploying to the cluster, verify the image and config work on a single node.
+
+### Llama 3 debug model (requires 4x GPU)
 
 ```bash
 docker run --rm --gpus all \
   -v $PATH_TO_TORCHTITAN:/workspace/torchtitan \
   -v $PATH_TO_TORCHTITAN/assets/hf/:/workspace/assets/hf/ \
   -v $PATH_TO_TORCHTITAN/tests/assets:/workspace/tests/assets \
-  torchtitan-70b:latest \
+  mfris/torchtitan-70b:latest \
   torchrun --nproc_per_node=4 \
   --rdzv_backend c10d --rdzv_endpoint localhost:0 \
   --local-ranks-filter 0 --role rank --tee 3 \
   -m torchtitan.train --module llama3 --config llama3_debugmodel
 ```
 
+### Qwen 3 debug model (requires 4x GPU)
+
+```bash
+docker run --rm --gpus all \
+  -v $PATH_TO_TORCHTITAN:/workspace/torchtitan \
+  -v $PATH_TO_TORCHTITAN/assets/hf/:/workspace/assets/hf/ \
+  -v $PATH_TO_TORCHTITAN/tests/assets:/workspace/tests/assets \
+  mfris/torchtitan-70b:latest \
+  torchrun --nproc_per_node=4 \
+  --rdzv_backend c10d --rdzv_endpoint localhost:0 \
+  --local-ranks-filter 0 --role rank --tee 3 \
+  -m torchtitan.train --module qwen3 --config qwen3_moe_debug
+```
+
 ---
+
+### One time: Download the Llama 3.1 70B tokenizer
+
+Requires a Hugging Face account with access granted to
+[meta-llama/Llama-3.1-70B](https://huggingface.co/meta-llama/Llama-3.1-70B).
+
+```bash
+pip install huggingface_hub
+
+huggingface-cli download meta-llama/Llama-3.1-70B \
+  --include "tokenizer*.json" "special_tokens_map.json" \
+  --local-dir $PATH_TO_TORCHTITAN/assets/hf/Llama-3.1-70B
+```
 
 ## Step 0: Create Capacity Reservation
 
@@ -61,15 +103,13 @@ CR_ID=$(aws ec2 create-capacity-reservation \
   --instance-type p4d.24xlarge \
   --instance-platform Linux/UNIX \
   --availability-zone us-east-2a \
-  --instance-count 2 \
+  --instance-count 4 \
   --instance-match-criteria targeted \
   --query 'CapacityReservation.CapacityReservationId' \
   --output text)
 
 echo "Capacity reservation: $CR_ID"
 ```
-
----
 
 ## Release Stale EIPs (relaunch only)
 
@@ -114,6 +154,7 @@ HEAD_ID=$(aws ec2 run-instances \
   ]" \
   --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":500,"VolumeType":"gp3","Iops":3000,"Throughput":500}}]' \
   --placement "GroupName=$PG_NAME" \
+  --instance-market-options MarketType=capacity-block \
   --capacity-reservation-specification "CapacityReservationTarget={CapacityReservationId=$CR_ID}" \
   --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=torchtitan-head}]" \
   --query 'Instances[0].InstanceId' --output text)
@@ -140,10 +181,11 @@ echo "Head private IP: $HEAD_PRIVATE_IP"
 echo "EIP allocation:  $EIP_ALLOC  (release this on teardown)"
 ```
 
-## Step 2: Launch Worker Node
+## Step 2: Launch Worker Nodes
 
 ```bash
-WORKER_ID=$(aws ec2 run-instances \
+# Worker 1
+WORKER1_ID=$(aws ec2 run-instances \
   --region $REGION \
   --instance-type $INSTANCE_TYPE \
   --image-id $AMI \
@@ -156,29 +198,76 @@ WORKER_ID=$(aws ec2 run-instances \
   ]" \
   --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":500,"VolumeType":"gp3","Iops":3000,"Throughput":500}}]' \
   --placement "GroupName=$PG_NAME" \
+  --instance-market-options MarketType=capacity-block \
   --capacity-reservation-specification "CapacityReservationTarget={CapacityReservationId=$CR_ID}" \
-  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=torchtitan-worker}]" \
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=torchtitan-worker1}]" \
   --query 'Instances[0].InstanceId' --output text)
+echo "Worker1 instance: $WORKER1_ID"
 
-echo "Worker instance: $WORKER_ID"
-aws ec2 wait instance-running --instance-ids $WORKER_ID --region $REGION
+# Worker 2
+WORKER2_ID=$(aws ec2 run-instances \
+  --region $REGION \
+  --instance-type $INSTANCE_TYPE \
+  --image-id $AMI \
+  --key-name $KEY \
+  --network-interfaces "[
+    {\"DeviceIndex\":0,\"NetworkCardIndex\":0,\"SubnetId\":\"$SUBNET\",\"Groups\":[\"$SG\"],\"InterfaceType\":\"efa\",\"DeleteOnTermination\":true},
+    {\"DeviceIndex\":1,\"NetworkCardIndex\":1,\"SubnetId\":\"$SUBNET\",\"Groups\":[\"$SG\"],\"InterfaceType\":\"efa\",\"DeleteOnTermination\":true},
+    {\"DeviceIndex\":2,\"NetworkCardIndex\":2,\"SubnetId\":\"$SUBNET\",\"Groups\":[\"$SG\"],\"InterfaceType\":\"efa\",\"DeleteOnTermination\":true},
+    {\"DeviceIndex\":3,\"NetworkCardIndex\":3,\"SubnetId\":\"$SUBNET\",\"Groups\":[\"$SG\"],\"InterfaceType\":\"efa\",\"DeleteOnTermination\":true}
+  ]" \
+  --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":500,"VolumeType":"gp3","Iops":3000,"Throughput":500}}]' \
+  --placement "GroupName=$PG_NAME" \
+  --instance-market-options MarketType=capacity-block \
+  --capacity-reservation-specification "CapacityReservationTarget={CapacityReservationId=$CR_ID}" \
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=torchtitan-worker2}]" \
+  --query 'Instances[0].InstanceId' --output text)
+echo "Worker2 instance: $WORKER2_ID"
 
-# Allocate an EIP for outbound internet access (ECR pull, HF download, etc.)
-WORKER_EIP_ALLOC=$(aws ec2 allocate-address --domain vpc --region $REGION \
-  --query 'AllocationId' --output text)
-WORKER_ENI=$(aws ec2 describe-instances --instance-ids $WORKER_ID --region $REGION \
-  --query 'Reservations[0].Instances[0].NetworkInterfaces[?Attachment.DeviceIndex==`0`].NetworkInterfaceId' \
-  --output text)
-aws ec2 associate-address --allocation-id $WORKER_EIP_ALLOC \
-  --network-interface-id $WORKER_ENI --region $REGION
+# Worker 3
+WORKER3_ID=$(aws ec2 run-instances \
+  --region $REGION \
+  --instance-type $INSTANCE_TYPE \
+  --image-id $AMI \
+  --key-name $KEY \
+  --network-interfaces "[
+    {\"DeviceIndex\":0,\"NetworkCardIndex\":0,\"SubnetId\":\"$SUBNET\",\"Groups\":[\"$SG\"],\"InterfaceType\":\"efa\",\"DeleteOnTermination\":true},
+    {\"DeviceIndex\":1,\"NetworkCardIndex\":1,\"SubnetId\":\"$SUBNET\",\"Groups\":[\"$SG\"],\"InterfaceType\":\"efa\",\"DeleteOnTermination\":true},
+    {\"DeviceIndex\":2,\"NetworkCardIndex\":2,\"SubnetId\":\"$SUBNET\",\"Groups\":[\"$SG\"],\"InterfaceType\":\"efa\",\"DeleteOnTermination\":true},
+    {\"DeviceIndex\":3,\"NetworkCardIndex\":3,\"SubnetId\":\"$SUBNET\",\"Groups\":[\"$SG\"],\"InterfaceType\":\"efa\",\"DeleteOnTermination\":true}
+  ]" \
+  --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":500,"VolumeType":"gp3","Iops":3000,"Throughput":500}}]' \
+  --placement "GroupName=$PG_NAME" \
+  --instance-market-options MarketType=capacity-block \
+  --capacity-reservation-specification "CapacityReservationTarget={CapacityReservationId=$CR_ID}" \
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=torchtitan-worker3}]" \
+  --query 'Instances[0].InstanceId' --output text)
+echo "Worker3 instance: $WORKER3_ID"
 
-WORKER_PUBLIC_IP=$(aws ec2 describe-addresses --allocation-ids $WORKER_EIP_ALLOC --region $REGION \
-  --query 'Addresses[0].PublicIp' --output text)
-WORKER_PRIVATE_IP=$(aws ec2 describe-instances --instance-ids $WORKER_ID --region $REGION \
-  --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
+aws ec2 wait instance-running \
+  --instance-ids $WORKER1_ID $WORKER2_ID $WORKER3_ID --region $REGION
 
-echo "Worker private IP:  $WORKER_PRIVATE_IP"
-echo "Worker EIP alloc:   $WORKER_EIP_ALLOC  (release this on teardown)"
+# Allocate EIPs and fetch private IPs for all workers
+for ID_VAR in WORKER1_ID WORKER2_ID WORKER3_ID; do
+  EIP_VAR="${ID_VAR/_ID/_EIP_ALLOC}"
+  IP_VAR="${ID_VAR/_ID/_PRIVATE_IP}"
+  INSTANCE_ID="${!ID_VAR}"
+
+  ALLOC=$(aws ec2 allocate-address --domain vpc --region $REGION \
+    --query 'AllocationId' --output text)
+  ENI=$(aws ec2 describe-instances --instance-ids $INSTANCE_ID --region $REGION \
+    --query 'Reservations[0].Instances[0].NetworkInterfaces[?Attachment.DeviceIndex==`0`].NetworkInterfaceId' \
+    --output text)
+  aws ec2 associate-address --allocation-id $ALLOC \
+    --network-interface-id $ENI --region $REGION
+
+  PRIVATE_IP=$(aws ec2 describe-instances --instance-ids $INSTANCE_ID --region $REGION \
+    --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
+
+  export $EIP_VAR=$ALLOC
+  export $IP_VAR=$PRIVATE_IP
+  echo "$ID_VAR private IP: $PRIVATE_IP  EIP alloc: $ALLOC"
+done
 ```
 
 ## Step 3: Wait for SSH on Head
@@ -212,16 +301,18 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP "
 export IMAGE=mfris/torchtitan-70b:latest
 ```
 
-```bash
-rsync -av --delete \
-  --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='out' \
-  -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
-  $PATH_TO_TORCHTITAN/ ubuntu@$HEAD_PUBLIC_IP:/home/ubuntu/torchtitan/
-```
 
 ## Step 6: Start Docker on Head
 
 ```bash
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
+  "sudo mkdir -p /home/ubuntu/torchtitan && sudo chown -R ubuntu:ubuntu /home/ubuntu/torchtitan"
+
+rsync -av --delete \
+  --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='out' --exclude 'ec2-out' \
+  -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
+  $PATH_TO_TORCHTITAN/ ubuntu@$HEAD_PUBLIC_IP:/home/ubuntu/torchtitan/
+
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP "
   docker stop torchtitan 2>/dev/null || true
   docker rm   torchtitan 2>/dev/null || true
@@ -247,99 +338,164 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP "
 "
 ```
 
-## Step 7: Wait for SSH on Worker
+## Step 7: Wait for SSH on Workers
 
-The worker has no public IP — SSH via the head as a jump host.
+The workers have no public IP — SSH via the head as a jump host.
 
 ```bash
-until ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
-  -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
-  ubuntu@$WORKER_PRIVATE_IP "echo ok" 2>/dev/null; do
-  echo "Waiting for worker SSH..."; sleep 10
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  until ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP "echo ok" 2>/dev/null; do
+    echo "Waiting for $WORKER_IP SSH..."; sleep 10
+  done
 done
 ```
 
-## Step 8: Pull Image, Sync Code, and Start Docker on Worker
+## Step 8: Pull Image, Sync Code on Workers
 
-Choose one of the two options below to pull the image on the worker node.
+Choose one of the two options below to pull the image on each worker node.
 
 **Option A: Pull from ECR** (requires `AmazonEC2ContainerRegistryReadOnly` on the instance IAM role)
 
 ```bash
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
-  -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
-  ubuntu@$WORKER_PRIVATE_IP "
-  aws ecr get-login-password --region $REGION \
-    | docker login --username AWS --password-stdin $ECR_REGISTRY
-  docker pull $IMAGE
-"
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP "
+    aws ecr get-login-password --region $REGION \
+      | docker login --username AWS --password-stdin $ECR_REGISTRY
+    docker pull $IMAGE
+  "
+done
 ```
 
 **Option B: Pull from DockerHub**
 
 ```bash
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
-  -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
-  ubuntu@$WORKER_PRIVATE_IP "
-  docker pull mfris/torchtitan-70b:latest
-"
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP "
+    docker pull mfris/torchtitan-70b:latest
+  "
+done
 ```
+
+Sync the local source tree to each worker before starting Docker. Docker bind
+mounts this host directory at `/workspace/torchtitan`; if the directory is empty,
+the container will also see an empty source tree.
+
+## Step 8b: Start Docker on Workers
 
 ```bash
-rsync -av --delete \
-  --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='out' \
-  -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o 'ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP'" \
-  $PATH_TO_TORCHTITAN/ ubuntu@$WORKER_PRIVATE_IP:/home/ubuntu/torchtitan/
+for WORKER_IP in $WORKER1_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP \
+    "sudo mkdir -p /home/ubuntu/torchtitan && sudo chown -R ubuntu:ubuntu /home/ubuntu/torchtitan"
 
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
-  -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
-  ubuntu@$WORKER_PRIVATE_IP "
-  docker stop torchtitan 2>/dev/null || true
-  docker rm   torchtitan 2>/dev/null || true
-  docker run -d --name torchtitan \
-    --gpus all --ipc=host --shm-size=64g \
-    --ulimit nofile=65536:65536 --ulimit memlock=-1:-1 --privileged \
-    --device /dev/infiniband --network host \
-    -v /home/ubuntu/torchtitan:/workspace/torchtitan \
-    -v /opt/amazon/efa:/opt/amazon/efa:ro \
-    -v /opt/amazon/ofi-nccl:/opt/aws-ofi-nccl:ro \
-    -v /usr/lib/x86_64-linux-gnu:/opt/host-lib:ro \
-    -v /home/ubuntu/torchtitan/assets/hf/:/workspace/assets/hf/:ro \
-    -v /home/ubuntu/torchtitan/tests/assets:/workspace/tests/assets \
-    -e LD_LIBRARY_PATH=/opt/amazon/efa/lib:/opt/aws-ofi-nccl/lib:/opt/host-lib \
-    -e FI_PROVIDER=efa \
-    -e FI_EFA_USE_DEVICE_RDMA=1 \
-    -e RDMAV_FORK_SAFE=1 \
-    -e FI_EFA_FORK_SAFE=1 \
-    -e NCCL_SOCKET_IFNAME=ens32 \
-    -e GLOO_SOCKET_IFNAME=ens32 \
-    -e NCCL_PROTO=simple \
-    $IMAGE sleep infinity
-"
+  rsync -av --delete \
+    --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='out' --exclude 'ec2-out' --exclude='.claude' --exclude='.github' \
+    -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o 'ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP'" \
+    $PATH_TO_TORCHTITAN/ ubuntu@$WORKER_IP:/home/ubuntu/torchtitan/
+
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP "
+    docker stop torchtitan 2>/dev/null || true
+    docker rm   torchtitan 2>/dev/null || true
+    docker run -d --name torchtitan \
+      --gpus all --ipc=host --shm-size=64g \
+      --ulimit nofile=65536:65536 --ulimit memlock=-1:-1 --privileged \
+      --device /dev/infiniband --network host \
+      -v /home/ubuntu/torchtitan:/workspace/torchtitan \
+      -v /opt/amazon/efa:/opt/amazon/efa:ro \
+      -v /opt/amazon/ofi-nccl:/opt/aws-ofi-nccl:ro \
+      -v /usr/lib/x86_64-linux-gnu:/opt/host-lib:ro \
+      -v /home/ubuntu/torchtitan/assets/hf/:/workspace/assets/hf/:ro \
+      -v /home/ubuntu/torchtitan/tests/assets:/workspace/tests/assets \
+      -e LD_LIBRARY_PATH=/opt/amazon/efa/lib:/opt/aws-ofi-nccl/lib:/opt/host-lib \
+      -e FI_PROVIDER=efa \
+      -e FI_EFA_USE_DEVICE_RDMA=1 \
+      -e RDMAV_FORK_SAFE=1 \
+      -e FI_EFA_FORK_SAFE=1 \
+      -e NCCL_SOCKET_IFNAME=ens32 \
+      -e GLOO_SOCKET_IFNAME=ens32 \
+      -e NCCL_PROTO=simple \
+      $IMAGE sleep infinity
+  "
+done
 ```
 
-## Step 8b: Fix /etc/hosts for Cross-Node torchrun
+## PATCH FSSPEC
+
+```bash
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
+  "docker exec torchtitan pip install --upgrade fsspec"
+
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP \
+    "docker exec torchtitan pip install --upgrade fsspec" &
+done
+wait
+```
+
+
+## Step 8c: Fix /etc/hosts for Cross-Node torchrun
 
 c10d rendezvous tries to resolve peer hostnames via DNS. AWS EC2 internal
 hostnames (`ip-A-B-C-D`) are not resolvable inside Docker containers, causing
-`torchrun` to hang silently. Add both nodes to each container's `/etc/hosts`:
+`torchrun` to hang silently. Add all nodes to every container's `/etc/hosts`.
 
 ```bash
 HEAD_HOSTNAME="ip-$(echo $HEAD_PRIVATE_IP | tr . -)"
-WORKER_HOSTNAME="ip-$(echo $WORKER_PRIVATE_IP | tr . -)"
+WORKER1_HOSTNAME="ip-$(echo $WORKER1_PRIVATE_IP | tr . -)"
+WORKER2_HOSTNAME="ip-$(echo $WORKER2_PRIVATE_IP | tr . -)"
+WORKER3_HOSTNAME="ip-$(echo $WORKER3_PRIVATE_IP | tr . -)"
 
-# Head container: add worker entry
+# Head container: add all 3 worker entries
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
-  "docker exec -u root torchtitan bash -c 'echo \"$WORKER_PRIVATE_IP $WORKER_HOSTNAME\" >> /etc/hosts'"
+  "docker exec -u root torchtitan bash -c '
+    echo \"$WORKER1_PRIVATE_IP $WORKER1_HOSTNAME\" >> /etc/hosts
+    echo \"$WORKER2_PRIVATE_IP $WORKER2_HOSTNAME\" >> /etc/hosts
+    echo \"$WORKER3_PRIVATE_IP $WORKER3_HOSTNAME\" >> /etc/hosts
+  '"
 
-# Worker container: add head entry
+# Worker1 container: add head, worker2, worker3
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
   -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
-  ubuntu@$WORKER_PRIVATE_IP \
-  "docker exec -u root torchtitan bash -c 'echo \"$HEAD_PRIVATE_IP $HEAD_HOSTNAME\" >> /etc/hosts'"
+  ubuntu@$WORKER1_PRIVATE_IP \
+  "docker exec -u root torchtitan bash -c '
+    echo \"$HEAD_PRIVATE_IP $HEAD_HOSTNAME\" >> /etc/hosts
+    echo \"$WORKER2_PRIVATE_IP $WORKER2_HOSTNAME\" >> /etc/hosts
+    echo \"$WORKER3_PRIVATE_IP $WORKER3_HOSTNAME\" >> /etc/hosts
+  '"
+
+# Worker2 container: add head, worker1, worker3
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+  -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+  ubuntu@$WORKER2_PRIVATE_IP \
+  "docker exec -u root torchtitan bash -c '
+    echo \"$HEAD_PRIVATE_IP $HEAD_HOSTNAME\" >> /etc/hosts
+    echo \"$WORKER1_PRIVATE_IP $WORKER1_HOSTNAME\" >> /etc/hosts
+    echo \"$WORKER3_PRIVATE_IP $WORKER3_HOSTNAME\" >> /etc/hosts
+  '"
+
+# Worker3 container: add head, worker1, worker2
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+  -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+  ubuntu@$WORKER3_PRIVATE_IP \
+  "docker exec -u root torchtitan bash -c '
+    echo \"$HEAD_PRIVATE_IP $HEAD_HOSTNAME\" >> /etc/hosts
+    echo \"$WORKER1_PRIVATE_IP $WORKER1_HOSTNAME\" >> /etc/hosts
+    echo \"$WORKER2_PRIVATE_IP $WORKER2_HOSTNAME\" >> /etc/hosts
+  '"
 ```
 
-## Step 8c: Fix NCCL Topology File Path
+## Step 8d: Fix NCCL Topology File Path
 
 NCCL looks for the p4d topology XML at `/opt/amazon/ofi-nccl/share/...` but the
 mount point inside the container is `/opt/aws-ofi-nccl/`. Without this symlink
@@ -349,10 +505,29 @@ the topology is silently skipped and NCCL may hang at the first collective.
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
   "docker exec -u root torchtitan bash -c 'mkdir -p /opt/amazon && ln -sfn /opt/aws-ofi-nccl /opt/amazon/ofi-nccl'"
 
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
-  -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
-  ubuntu@$WORKER_PRIVATE_IP \
-  "docker exec -u root torchtitan bash -c 'mkdir -p /opt/amazon && ln -sfn /opt/aws-ofi-nccl /opt/amazon/ofi-nccl'"
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP \
+    "docker exec -u root torchtitan bash -c 'mkdir -p /opt/amazon && ln -sfn /opt/aws-ofi-nccl /opt/amazon/ofi-nccl'"
+done
+```
+
+## Step 8e: Verify Source Mounts
+
+Confirm all containers can see the synced source tree before launching a
+training job:
+
+```bash
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
+  "docker exec -w /workspace/torchtitan torchtitan test -f ./run_train.sh"
+
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP \
+    "docker exec -w /workspace/torchtitan torchtitan test -f ./run_train.sh"
+done
 ```
 
 ## Step 9: Verify EFA
@@ -360,7 +535,7 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
 ### 9a. Host-level check
 
 Verify EFA cross-node RDMA works at the host level.
-Start server on head, then run client on worker — should print latency/bandwidth numbers.
+Start server on head, then run client on worker1 — should print latency/bandwidth numbers.
 
 ```bash
 ssh -n -i $SSH_KEY ubuntu@$HEAD_PUBLIC_IP \
@@ -368,7 +543,7 @@ ssh -n -i $SSH_KEY ubuntu@$HEAD_PUBLIC_IP \
 sleep 5
 ssh -i $SSH_KEY \
   -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
-  ubuntu@$WORKER_PRIVATE_IP \
+  ubuntu@$WORKER1_PRIVATE_IP \
   "/opt/amazon/efa/bin/fi_pingpong -p efa $HEAD_PRIVATE_IP"
 ssh -i $SSH_KEY ubuntu@$HEAD_PUBLIC_IP "cat /tmp/fi_ping_server.log"
 ```
@@ -385,7 +560,7 @@ ssh -n -i $SSH_KEY ubuntu@$HEAD_PUBLIC_IP \
 sleep 5
 ssh -i $SSH_KEY \
   -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
-  ubuntu@$WORKER_PRIVATE_IP \
+  ubuntu@$WORKER1_PRIVATE_IP \
   "docker exec torchtitan /opt/amazon/efa/bin/fi_pingpong -p efa $HEAD_PRIVATE_IP"
 ssh -i $SSH_KEY ubuntu@$HEAD_PUBLIC_IP "cat /tmp/fi_ping_container_server.log"
 ```
@@ -402,7 +577,7 @@ proceeding.
 ### 10b. Debug model with nsys tracing
 
 Smoke test cross-node training and verify nsys tracing works. Uses static
-rendezvous (`--node_rank`) to avoid c10d hostname resolution issues. Both nodes
+rendezvous (`--node_rank`) to avoid c10d hostname resolution issues. All nodes
 can start simultaneously.
 
 To confirm EFA is active, add `-e NCCL_DEBUG=INFO` and look for
@@ -415,29 +590,33 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
    -e GLOO_SOCKET_IFNAME=ens32 \
    -e NCCL_PROTO=simple \
    torchtitan \
-   torchrun --nnodes=2 --nproc_per_node=8 \
+   torchrun --nnodes=4 --nproc_per_node=8 \
    --node_rank=0 \
    --master_addr=$HEAD_PRIVATE_IP --master_port=29500 \
    --local-ranks-filter 0 --role rank --tee 3 \
    torchtitan/run.py torchtitan.train --module llama3 --config llama3_debugmodel" &
 
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
-  -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
-  ubuntu@$WORKER_PRIVATE_IP \
-  "docker exec -w /workspace \
-   -e NCCL_SOCKET_IFNAME=ens32 \
-   -e GLOO_SOCKET_IFNAME=ens32 \
-   -e NCCL_PROTO=simple \
-   torchtitan \
-   torchrun --nnodes=2 --nproc_per_node=8 \
-   --node_rank=1 \
-   --master_addr=$HEAD_PRIVATE_IP --master_port=29500 \
-   --local-ranks-filter 0 --role rank --tee 3 \
-   torchtitan/run.py torchtitan.train --module llama3 --config llama3_debugmodel"
+NODE_RANK=1
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP \
+    "docker exec -w /workspace \
+     -e NCCL_SOCKET_IFNAME=ens32 \
+     -e GLOO_SOCKET_IFNAME=ens32 \
+     -e NCCL_PROTO=simple \
+     torchtitan \
+     torchrun --nnodes=4 --nproc_per_node=8 \
+     --node_rank=$NODE_RANK \
+     --master_addr=$HEAD_PRIVATE_IP --master_port=29500 \
+     --local-ranks-filter 0 --role rank --tee 3 \
+     torchtitan/run.py torchtitan.train --module llama3 --config llama3_debugmodel" &
+  NODE_RANK=$((NODE_RANK + 1))
+done
 wait
 ```
 
-### 10c. Full 70B run
+### 10c. Llama 70B run
 
 ```bash
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
@@ -446,17 +625,21 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
    -e GLOO_SOCKET_IFNAME=ens32 \
    -e NCCL_PROTO=simple \
    torchtitan \
-   bash -c 'NNODE=2 NGPU=8 LOG_RANK=0 CONFIG=llama3_70b NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
+   bash -c 'NNODE=4 NGPU=8 LOG_RANK=0 CONFIG=llama3_70b NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
 
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
-  -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
-  ubuntu@$WORKER_PRIVATE_IP \
-  "docker exec -w /workspace/torchtitan \
-   -e NCCL_SOCKET_IFNAME=ens32 \
-   -e GLOO_SOCKET_IFNAME=ens32 \
-   -e NCCL_PROTO=simple \
-   torchtitan \
-   bash -c 'NNODE=2 NGPU=8 LOG_RANK=0 CONFIG=llama3_70b NODE_RANK=1 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'"
+NODE_RANK=1
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP \
+    "docker exec -w /workspace/torchtitan \
+     -e NCCL_SOCKET_IFNAME=ens32 \
+     -e GLOO_SOCKET_IFNAME=ens32 \
+     -e NCCL_PROTO=simple \
+     torchtitan \
+     bash -c 'NNODE=4 NGPU=8 LOG_RANK=0 CONFIG=llama3_70b NODE_RANK=$NODE_RANK MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
+  NODE_RANK=$((NODE_RANK + 1))
+done
 wait
 ```
 
@@ -465,10 +648,140 @@ Force-terminate if hung:
 ```bash
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
   "docker exec torchtitan pkill -9 -f torchtitan.train; pkill -9 -f torchrun" &
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
-  -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
-  ubuntu@$WORKER_PRIVATE_IP \
-  "docker exec torchtitan pkill -9 -f torchtitan.train; pkill -9 -f torchrun"
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP \
+    "docker exec torchtitan pkill -9 -f torchtitan.train; pkill -9 -f torchrun" &
+done
+wait
+```
+
+### 10d. Qwen3-30B-A3B with EP=2, PP=4
+
+Runs `qwen3_30b` (MoE, 30B-A3B) across 4 nodes. The config has `expert_parallel_degree=2`,
+`pipeline_parallel_degree=4`, and `data_parallel_shard_degree=-1` (resolves to 4 on 16 GPUs),
+using the Qwen3-1.7B tokenizer at `./assets/hf/Qwen3-1.7B`.
+
+**Topology note:** `parallel_dims.py` builds the sparse mesh with DP/FSDP before PP in
+rank-major order. On 4 nodes with contiguous `torchrun` ranks per node, this keeps PP
+stages within a node and places expert-parallel communication across nodes.
+
+```bash
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
+  "docker exec -w /workspace/torchtitan \
+   -e NCCL_SOCKET_IFNAME=ens32 \
+   -e GLOO_SOCKET_IFNAME=ens32 \
+   -e NCCL_PROTO=simple \
+   torchtitan \
+   bash -c 'NNODE=4 NGPU=8 LOG_RANK=0 MODULE=qwen3 CONFIG=qwen3_30b NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
+
+NODE_RANK=1
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP \
+    "docker exec -w /workspace/torchtitan \
+     -e NCCL_SOCKET_IFNAME=ens32 \
+     -e GLOO_SOCKET_IFNAME=ens32 \
+     -e NCCL_PROTO=simple \
+     torchtitan \
+     bash -c 'NNODE=4 NGPU=8 LOG_RANK=0 MODULE=qwen3 CONFIG=qwen3_30b NODE_RANK=$NODE_RANK MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
+  NODE_RANK=$((NODE_RANK + 1))
+done
+wait
+```
+
+### 10e. Qwen3-1B
+
+Runs `qwen3_1b` across 4 nodes x 4 GPUs with `pipeline_parallel_degree=4`,
+`expert_parallel_degree=2`, and `data_parallel_shard_degree=-1` (resolves to 2).
+With the DP/FSDP-first sparse mesh in `parallel_dims.py`, each 4-rank PP group
+stays within a node while each EP group synchronizes across nodes.
+
+```bash
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
+  "docker exec -w /workspace/torchtitan \
+   -e NCCL_SOCKET_IFNAME=ens32 \
+   -e GLOO_SOCKET_IFNAME=ens32 \
+   -e NCCL_PROTO=simple \
+   torchtitan \
+   bash -c 'echo HEAD; pwd; ls -l ./run_train.sh; NNODE=4 NGPU=4 LOG_RANK=0 MODULE=qwen3 CONFIG=qwen3_1b NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
+
+NODE_RANK=1
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP \
+    "docker exec -w /workspace/torchtitan \
+     -e NCCL_SOCKET_IFNAME=ens32 \
+     -e GLOO_SOCKET_IFNAME=ens32 \
+     -e NCCL_PROTO=simple \
+     torchtitan \
+     bash -c 'echo WORKER; pwd; ls -l ./run_train.sh; NNODE=4 NGPU=4 LOG_RANK=0 MODULE=qwen3 CONFIG=qwen3_1b NODE_RANK=$NODE_RANK MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
+  NODE_RANK=$((NODE_RANK + 1))
+done
+wait
+```
+
+Resync code on all nodes:
+
+```bash
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
+  "sudo mkdir -p /home/ubuntu/torchtitan && sudo chown -R ubuntu:ubuntu /home/ubuntu/torchtitan"
+
+rsync -av --delete \
+  --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='out' \
+  -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
+  $PATH_TO_TORCHTITAN/ ubuntu@$HEAD_PUBLIC_IP:/home/ubuntu/torchtitan/
+
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP \
+    "sudo mkdir -p /home/ubuntu/torchtitan && sudo chown -R ubuntu:ubuntu /home/ubuntu/torchtitan"
+
+  rsync -av --delete \
+    --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='out' \
+    -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o 'ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP'" \
+    $PATH_TO_TORCHTITAN/ ubuntu@$WORKER_IP:/home/ubuntu/torchtitan/
+done
+```
+
+### 10f. Qwen3-9B
+
+```bash
+# Create out/ dir on all nodes (nsys needs it to exist before writing traces)
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
+  "docker exec torchtitan mkdir -p /workspace/torchtitan/out"
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP \
+    "docker exec torchtitan mkdir -p /workspace/torchtitan/out"
+done
+
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
+  "docker exec -w /workspace/torchtitan \
+   -e NCCL_SOCKET_IFNAME=ens32 \
+   -e GLOO_SOCKET_IFNAME=ens32 \
+   -e NCCL_PROTO=simple \
+   torchtitan \
+   bash -c 'echo HEAD; pwd; ls -l ./run_train.sh; NNODE=4 NGPU=8 LOG_RANK=0 MODULE=qwen3 CONFIG=qwen3_9b NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
+
+NODE_RANK=1
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+    -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
+    ubuntu@$WORKER_IP \
+    "docker exec -w /workspace/torchtitan \
+     -e NCCL_SOCKET_IFNAME=ens32 \
+     -e GLOO_SOCKET_IFNAME=ens32 \
+     -e NCCL_PROTO=simple \
+     torchtitan \
+     bash -c 'echo WORKER; pwd; ls -l ./run_train.sh; NNODE=4 NGPU=8 LOG_RANK=0 MODULE=qwen3 CONFIG=qwen3_9b NODE_RANK=$NODE_RANK MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
+  NODE_RANK=$((NODE_RANK + 1))
+done
 wait
 ```
 
@@ -484,13 +797,17 @@ Nsys traces are written to `/workspace/torchtitan/out/`, which is bind-mounted f
 rsync -av \
   -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
   ubuntu@$HEAD_PUBLIC_IP:/home/ubuntu/torchtitan/out/ \
-  $PATH_TO_TORCHTITAN/ec2-out/
+  $PATH_TO_TORCHTITAN/ec2-out/head/
 
-# From worker node (via head as jump host)
-rsync -av \
-  -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o 'ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP'" \
-  ubuntu@$WORKER_PRIVATE_IP:/home/ubuntu/torchtitan/out/ \
-  $PATH_TO_TORCHTITAN/ec2-out/
+# From worker nodes (via head as jump host)
+for SUFFIX_WORKER_IP in "worker1 $WORKER1_PRIVATE_IP" "worker2 $WORKER2_PRIVATE_IP" "worker3 $WORKER3_PRIVATE_IP"; do
+  SUFFIX=$(echo $SUFFIX_WORKER_IP | cut -d' ' -f1)
+  WORKER_IP=$(echo $SUFFIX_WORKER_IP | cut -d' ' -f2)
+  rsync -av \
+    -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o 'ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP'" \
+    ubuntu@$WORKER_IP:/home/ubuntu/torchtitan/out/ \
+    $PATH_TO_TORCHTITAN/ec2-out/$SUFFIX/
+done
 ```
 
 ---
@@ -501,17 +818,28 @@ Since the source is mounted from the host, code changes only require an rsync
 to each node — no rebuild or repull needed:
 
 ```bash
-RSYNC_OPTS="--delete --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='out'"
+RSYNC_OPTS=(
+  --delete
+  --delete-excluded
+  --exclude='.git'
+  --exclude='__pycache__'
+  --exclude='.venv'
+  --exclude='venv'
+  --exclude='out/***'
+  --exclude='assets/hf/***'
+)
 
 # Head
-rsync -av $RSYNC_OPTS \
+rsync -av "${RSYNC_OPTS[@]}" \
   -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
   $PATH_TO_TORCHTITAN/ ubuntu@$HEAD_PUBLIC_IP:/home/ubuntu/torchtitan/
 
-# Worker (via head as jump host)
-rsync -av $RSYNC_OPTS \
-  -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o 'ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP'" \
-  $PATH_TO_TORCHTITAN/ ubuntu@$WORKER_PRIVATE_IP:/home/ubuntu/torchtitan/
+# Workers (via head as jump host)
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
+  rsync -av "${RSYNC_OPTS[@]}" \
+    -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o 'ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP'" \
+    $PATH_TO_TORCHTITAN/ ubuntu@$WORKER_IP:/home/ubuntu/torchtitan/
+done
 ```
 
 Only rebuild and repush the image when `pyproject.toml` dependencies change.
@@ -521,9 +849,13 @@ Only rebuild and repush the image when `pyproject.toml` dependencies change.
 ## Step 11: Teardown
 
 ```bash
-aws ec2 terminate-instances --instance-ids $HEAD_ID $WORKER_ID --region $REGION
-aws ec2 wait instance-terminated --instance-ids $HEAD_ID $WORKER_ID --region $REGION
+aws ec2 terminate-instances \
+  --instance-ids $HEAD_ID $WORKER1_ID $WORKER2_ID $WORKER3_ID --region $REGION
+aws ec2 wait instance-terminated \
+  --instance-ids $HEAD_ID $WORKER1_ID $WORKER2_ID $WORKER3_ID --region $REGION
 aws ec2 release-address --allocation-id $EIP_ALLOC --region $REGION
-aws ec2 release-address --allocation-id $WORKER_EIP_ALLOC --region $REGION
+aws ec2 release-address --allocation-id $WORKER1_EIP_ALLOC --region $REGION
+aws ec2 release-address --allocation-id $WORKER2_EIP_ALLOC --region $REGION
+aws ec2 release-address --allocation-id $WORKER3_EIP_ALLOC --region $REGION
 aws ec2 cancel-capacity-reservation --capacity-reservation-id $CR_ID --region $REGION
 ```
