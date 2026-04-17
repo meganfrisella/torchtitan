@@ -237,9 +237,9 @@ def qwen3_1b() -> Trainer.Config:
         optimizer=OptimizersContainer.Config(lr=8e-4),
         lr_scheduler=LRSchedulersContainer.Config(warmup_steps=2),
         training=TrainingConfig(
-            # global_batch_size=128,  # Should be divisible by pipeline_parallel_microbatch_size
+            global_batch_size=128,  # Should be divisible by pipeline_parallel_microbatch_size
             local_batch_size=64,  # Should be divisible by pipeline_parallel_microbatch_size
-            seq_len=1024,
+            seq_len=512,
             steps=8,  # Few iterations for profiling
             dtype="bfloat16",
         ),

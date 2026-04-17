@@ -33,6 +33,7 @@ OOM_PATTERNS = (
 )
 DEFAULT_SCHEDULE_SWEEP = ("1f1b", "interleaved1f1b", "zerobubble")
 DEFAULT_BASE_CONFIG = "qwen3_9b"
+SUPPORTED_MODELS = ("qwen3_1b", "qwen3_9b")
 
 
 @dataclass
@@ -70,6 +71,11 @@ class Result:
     iter_time_stddev: float | None
     peak_memory_gb_by_rank: str
     failure_reason: str
+
+
+def experiment_artifact_dirname(index: int, exp: Experiment) -> str:
+    return f"{index:02d}_{exp.sweep}__pp{exp.pp}_dp{exp.dp}_ep{exp.ep}__{exp.zero_level}__{exp.schedule}__mb{exp.mb_size}__sl{exp.seq_len}"
+
 
 
 def normalize_schedule(name: str) -> str:
@@ -128,7 +134,7 @@ def build_experiments(
 
     if "zero" in enabled_sweeps:
         for zero_level in ("none", "zero2", "zero3"):
-            for mb_size in (4, 8, 16):
+            for mb_size in (16, 32, 64):
                 experiments.append(
                 Experiment(
                     sweep="zero",
@@ -248,7 +254,7 @@ def node_count(exp: Experiment) -> int:
 
 
 
-def make_command(script_path: Path, exp: Experiment) -> list[str]:
+def make_command(script_path: Path, exp: Experiment, *, nsight: bool = False) -> list[str]:
     replicate_degree, shard_degree, reshard_after_forward = dp_runtime_settings(exp)
     train_args = [
         "--parallelism.pipeline_parallel_degree",
@@ -279,7 +285,7 @@ def make_command(script_path: Path, exp: Experiment) -> list[str]:
         )
     if exp.sweep == "schedule":
         train_args.append("--compile.no-enable")
-    return [
+    command = [
         str(script_path),
         "--nnode",
         str(node_count(exp)),
@@ -291,9 +297,23 @@ def make_command(script_path: Path, exp: Experiment) -> list[str]:
         exp.config,
         "--log-rank",
         ",".join(str(i) for i in range(exp.pp)),
-        "--",
-        *train_args,
     ]
+    if nsight:
+        command.append("--nsight")
+    command.extend(["--", *train_args])
+    return command
+
+
+
+def copy_nsight_profiles(copy_script_path: Path, artifact_dir: Path) -> None:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        str(copy_script_path),
+        "--nsight",
+        "--out-dir",
+        str(artifact_dir),
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
 
 
@@ -324,18 +344,6 @@ def parse_peak_memory_values(peak_memory_gb_by_rank: str) -> list[float]:
     return values
 
 
-def throughput_tokens_per_s(row: Result) -> float | None:
-    if row.iter_time_mean is None or row.iter_time_mean <= 0:
-        return None
-    return (row.global_batch_size * row.seq_len) / row.iter_time_mean
-
-
-def throughput_std_tokens_per_s(row: Result) -> float | None:
-    if row.iter_time_mean is None or row.iter_time_stddev is None or row.iter_time_mean <= 0:
-        return None
-    return ((row.global_batch_size * row.seq_len) / (row.iter_time_mean ** 2)) * row.iter_time_stddev
-
-
 def save_bar_plot(
     title: str,
     xlabel: str,
@@ -348,19 +356,17 @@ def save_bar_plot(
     labels = [experiment_label_from_result(row) for row in rows]
     xs = list(range(len(rows)))
 
-    success_rows = [row for row in rows if row.status == "ok" and throughput_tokens_per_s(row) is not None]
-    success_max = max((float(throughput_tokens_per_s(row)) for row in success_rows), default=0.0)
+    success_rows = [row for row in rows if row.status == "ok" and row.iter_time_mean is not None]
+    success_max = max((float(row.iter_time_mean) for row in success_rows), default=0.0)
     marker_y = success_max * 0.05 if success_max > 0 else 1.0
 
     fig, ax = plt.subplots(figsize=(max(10, len(rows) * 0.8), 6))
     for index, row in enumerate(rows):
-        throughput = throughput_tokens_per_s(row)
-        throughput_std = throughput_std_tokens_per_s(row)
-        if row.status == "ok" and throughput is not None:
+        if row.status == "ok" and row.iter_time_mean is not None:
             ax.bar(
                 index,
-                float(throughput),
-                yerr=float(throughput_std or 0.0),
+                float(row.iter_time_mean),
+                yerr=float(row.iter_time_stddev or 0.0),
                 color="#4C72B0",
                 ecolor="#2F2F2F",
                 capsize=4,
@@ -372,7 +378,7 @@ def save_bar_plot(
 
     ax.set_title(title)
     ax.set_xlabel(xlabel)
-    ax.set_ylabel("Throughput (tokens/s)")
+    ax.set_ylabel("Iteration Time (s)")
     ax.set_xticks(xs)
     ax.set_xticklabels(labels, rotation=45, ha="right")
     ax.grid(axis="y", linestyle="--", alpha=0.35)
@@ -483,7 +489,19 @@ def print_progress(done: int, total: int, results: list[Result]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Qwen e2e evaluation sweeps and generate plots/CSVs.")
     parser.add_argument("--script", default="scripts/run-qwen-ec2.sh", help="EC2 runner script path")
-    parser.add_argument("--base-config", default=DEFAULT_BASE_CONFIG, help=f"Base torchtitan config to override at runtime. Default: {DEFAULT_BASE_CONFIG}")
+    parser.add_argument("--copy-script", default="scripts/copy-logs.sh", help="EC2 log/profile copy script path")
+    parser.add_argument(
+        "--model",
+        choices=SUPPORTED_MODELS,
+        default=DEFAULT_BASE_CONFIG,
+        help=f"Qwen config to run for all sweeps. Default: {DEFAULT_BASE_CONFIG}",
+    )
+    parser.add_argument(
+        "--base-config",
+        choices=SUPPORTED_MODELS,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--ep-degree", type=int, default=1, help="Expert parallel degree for all sweeps. When > 1, data_parallel_shard_degree is forced to -1.")
     parser.add_argument("--seq-len", type=int, default=512, help="Sequence length override for all sweeps")
     parser.add_argument("--out-dir", default=None, help="Output directory. Default: out/e2e-eval/<timestamp>")
@@ -500,6 +518,7 @@ def parse_args() -> argparse.Namespace:
         default=["scalability", "zero", "schedule"],
         help="Subset of e2e sweeps to run. Default: scalability zero schedule",
     )
+    parser.add_argument("--nsight", action="store_true", help="Run experiments via Nsight and save fetched profiles under <out-dir>/nsight/<experiment>/")
     parser.add_argument("--dry-run", action="store_true", help="Plan experiments and output commands without running them")
     return parser.parse_args()
 
@@ -511,6 +530,12 @@ def main() -> int:
     if not script_path.is_file():
         print(f"runner script not found: {script_path}", file=sys.stderr)
         return 1
+    copy_script_path = Path(args.copy_script).resolve()
+    if args.nsight and not copy_script_path.is_file():
+        print(f"copy script not found: {copy_script_path}", file=sys.stderr)
+        return 1
+
+    selected_model = args.base_config or args.model
 
     try:
         schedule_sweep = [normalize_schedule(s) for s in args.schedule_sweep]
@@ -524,7 +549,7 @@ def main() -> int:
 
     experiments = build_experiments(
         schedule_sweep=schedule_sweep,
-        base_config=args.base_config,
+        base_config=selected_model,
         ep_degree=args.ep_degree,
         seq_len=args.seq_len,
         enabled_sweeps=set(args.sweeps),
@@ -552,7 +577,7 @@ def main() -> int:
             "command",
         ])
         for exp in experiments:
-            cmd = make_command(script_path, exp)
+            cmd = make_command(script_path, exp, nsight=args.nsight)
             writer.writerow([
                 exp.sweep,
                 exp.config,
@@ -578,16 +603,24 @@ def main() -> int:
             print(
                 f"[{i}/{total}] {exp.sweep}: {experiment_label(exp)} config={exp.config} pp={exp.pp} dp={exp.dp} ep={exp.ep} seq_len={exp.seq_len}"
             )
-            print("  " + " ".join(make_command(script_path, exp)))
+            print("  " + " ".join(make_command(script_path, exp, nsight=args.nsight)))
         return 0
 
     for i, exp in enumerate(experiments, start=1):
         log_path = logs_dir / log_filename(i, exp)
-        cmd = make_command(script_path, exp)
+        cmd = make_command(script_path, exp, nsight=args.nsight)
         print(f"[{i}/{total}] running sweep={exp.sweep} label={experiment_label(exp)} config={exp.config}")
         print(f"  log={log_path}")
         with log_path.open("w", encoding="utf-8") as log_file:
             result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT, text=True, check=False)
+
+        if args.nsight:
+            artifact_dir = base_out / "nsight" / experiment_artifact_dirname(i, exp)
+            try:
+                copy_nsight_profiles(copy_script_path, artifact_dir)
+                print(f"[{i}/{total}] copied nsight profiles to {artifact_dir}")
+            except subprocess.CalledProcessError:
+                print(f"[{i}/{total}] failed to copy nsight profiles to {artifact_dir}", file=sys.stderr)
 
         iter_mean, iter_std, peak_str, is_oom, reason = parse_log(log_path)
         if result.returncode == 0 and iter_mean is not None:
