@@ -27,7 +27,7 @@ from pathlib import Path
 DEFAULT_PP_VALUES = (4, 8)
 DEFAULT_PARALLEL_VALUES = (1, 2, 4)
 DEFAULT_SCHEDULES = ("1f1b", "interleaved1f1b", "zerobubble", "dualpipe")
-DEFAULT_ZERO_LEVELS = ("none", "zero2", "zero3")
+DEFAULT_ZERO_LEVELS = ("zero1", "zero2", "zero3")
 DEFAULT_BASE_CONFIG = "qwen3_9b"
 RUNTIME_SCHEDULES = {
     "1f1b": "1F1B",
@@ -44,9 +44,9 @@ def _build_config_name() -> str:
 
 def _is_valid_combination(*, schedule: str, parallel_degree: int, mode: str, zero_level: str) -> bool:
     if mode == "ep":
-        return zero_level == "none"
-    return (zero_level == "none") or (
-        zero_level != "none" and schedule == "1f1b" and parallel_degree in (2, 4)
+        return zero_level == "zero1"
+    return (zero_level == "zero1") or (
+        zero_level != "zero1" and schedule == "1f1b" and parallel_degree in (2, 4)
     )
 
 
@@ -64,7 +64,7 @@ def _global_batch_size(pp: int, parallel_degree: int, mode: str, mb_size: int) -
 def _runtime_dp_settings(*, mode: str, parallel_degree: int, zero_level: str) -> tuple[int, int, str | None, int]:
     if mode == "ep":
         return 1, -1 if parallel_degree > 1 else 1, None, parallel_degree
-    if zero_level == "none":
+    if zero_level == "zero1":
         return parallel_degree, 1, None, parallel_degree
     if zero_level == "zero2":
         return 1, parallel_degree, "never", parallel_degree

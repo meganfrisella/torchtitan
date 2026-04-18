@@ -32,7 +32,7 @@ OOM_PATTERNS = (
     "std::bad_alloc",
 )
 DEFAULT_SCHEDULE_SWEEP = ("1f1b", "interleaved1f1b", "zerobubble")
-DEFAULT_BASE_CONFIG = "qwen3_9b"
+DEFAULT_BASE_CONFIG = "qwen3_1b"
 SUPPORTED_MODELS = ("qwen3_1b", "qwen3_9b")
 
 
@@ -124,16 +124,16 @@ def build_experiments(
                     config=base_config,
                     pp=pp,
                     dp=dp,
-                    ep=ep_degree,
-                    zero_level="none",
+                    ep=1,
+                    zero_level="zero1",
                     schedule="1f1b",
-                    mb_size=4,
+                    mb_size=16,
                     seq_len=seq_len,
                 )
             )
 
     if "zero" in enabled_sweeps:
-        for zero_level in ("none", "zero2", "zero3"):
+        for zero_level in ("zero1", "zero2", "zero3"):
             for mb_size in (16, 32, 64):
                 experiments.append(
                 Experiment(
@@ -156,11 +156,11 @@ def build_experiments(
                 sweep="schedule",
                 config=base_config,
                 pp=8,
-                dp=2,
-                ep=ep_degree,
-                zero_level="none",
+                dp=1,
+                ep=1,
+                zero_level="zero1",
                 schedule=normalize_schedule(schedule),
-                mb_size=4,
+                mb_size=16,
                 seq_len=seq_len,
             )
         )
@@ -235,7 +235,7 @@ def parse_log(log_path: Path) -> tuple[float | None, float | None, str, bool, st
 
 
 def dp_runtime_settings(exp: Experiment) -> tuple[int, int, str | None]:
-    if exp.zero_level == "none":
+    if exp.zero_level == "zero1":
         replicate_degree = exp.dp
         shard_degree = -1 if exp.ep > 1 else 1
         return replicate_degree, shard_degree, None
