@@ -4,11 +4,11 @@
 export PATH_TO_TORCHTITAN=/m-coriander/coriander/mfris/torchtitan
 export IMAGE=mfris/torchtitan-70b:latest
 export SSH_KEY=~/.ssh/ray-autoscaler_us-east-2.pem
-export HEAD_PUBLIC_IP=18.189.223.40
-export HEAD_PRIVATE_IP=10.0.1.14
-export WORKER1_PRIVATE_IP=10.0.1.210
-export WORKER2_PRIVATE_IP=10.0.1.67
-export WORKER3_PRIVATE_IP=10.0.1.160
+export HEAD_PUBLIC_IP=xxx
+export HEAD_PRIVATE_IP=xxx
+export WORKER1_PRIVATE_IP=xxx
+export WORKER2_PRIVATE_IP=xxx
+export WORKER3_PRIVATE_IP=xxx
 ```
 
 # Start docker
