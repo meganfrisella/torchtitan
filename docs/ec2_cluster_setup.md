@@ -333,7 +333,6 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP "
     -e FI_EFA_FORK_SAFE=1 \
     -e NCCL_SOCKET_IFNAME=ens32 \
     -e GLOO_SOCKET_IFNAME=ens32 \
-    -e NCCL_PROTO=simple \
     $IMAGE sleep infinity
 "
 ```
@@ -389,7 +388,7 @@ the container will also see an empty source tree.
 ## Step 8b: Start Docker on Workers
 
 ```bash
-for WORKER_IP in $WORKER1_PRIVATE_IP; do
+for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
   ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
     -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP" \
     ubuntu@$WORKER_IP \
@@ -422,7 +421,6 @@ for WORKER_IP in $WORKER1_PRIVATE_IP; do
       -e FI_EFA_FORK_SAFE=1 \
       -e NCCL_SOCKET_IFNAME=ens32 \
       -e GLOO_SOCKET_IFNAME=ens32 \
-      -e NCCL_PROTO=simple \
       $IMAGE sleep infinity
   "
 done
@@ -588,7 +586,6 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
   "docker exec -w /workspace \
    -e NCCL_SOCKET_IFNAME=ens32 \
    -e GLOO_SOCKET_IFNAME=ens32 \
-   -e NCCL_PROTO=simple \
    torchtitan \
    torchrun --nnodes=4 --nproc_per_node=8 \
    --node_rank=0 \
@@ -604,7 +601,6 @@ for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
     "docker exec -w /workspace \
      -e NCCL_SOCKET_IFNAME=ens32 \
      -e GLOO_SOCKET_IFNAME=ens32 \
-     -e NCCL_PROTO=simple \
      torchtitan \
      torchrun --nnodes=4 --nproc_per_node=8 \
      --node_rank=$NODE_RANK \
@@ -623,7 +619,6 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
   "docker exec -w /workspace/torchtitan \
    -e NCCL_SOCKET_IFNAME=ens32 \
    -e GLOO_SOCKET_IFNAME=ens32 \
-   -e NCCL_PROTO=simple \
    torchtitan \
    bash -c 'NNODE=4 NGPU=8 LOG_RANK=0 CONFIG=llama3_70b NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
 
@@ -635,7 +630,6 @@ for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
     "docker exec -w /workspace/torchtitan \
      -e NCCL_SOCKET_IFNAME=ens32 \
      -e GLOO_SOCKET_IFNAME=ens32 \
-     -e NCCL_PROTO=simple \
      torchtitan \
      bash -c 'NNODE=4 NGPU=8 LOG_RANK=0 CONFIG=llama3_70b NODE_RANK=$NODE_RANK MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
   NODE_RANK=$((NODE_RANK + 1))
@@ -672,7 +666,6 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
   "docker exec -w /workspace/torchtitan \
    -e NCCL_SOCKET_IFNAME=ens32 \
    -e GLOO_SOCKET_IFNAME=ens32 \
-   -e NCCL_PROTO=simple \
    torchtitan \
    bash -c 'NNODE=4 NGPU=8 LOG_RANK=0 MODULE=qwen3 CONFIG=qwen3_30b NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
 
@@ -684,7 +677,6 @@ for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
     "docker exec -w /workspace/torchtitan \
      -e NCCL_SOCKET_IFNAME=ens32 \
      -e GLOO_SOCKET_IFNAME=ens32 \
-     -e NCCL_PROTO=simple \
      torchtitan \
      bash -c 'NNODE=4 NGPU=8 LOG_RANK=0 MODULE=qwen3 CONFIG=qwen3_30b NODE_RANK=$NODE_RANK MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
   NODE_RANK=$((NODE_RANK + 1))
@@ -704,7 +696,6 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
   "docker exec -w /workspace/torchtitan \
    -e NCCL_SOCKET_IFNAME=ens32 \
    -e GLOO_SOCKET_IFNAME=ens32 \
-   -e NCCL_PROTO=simple \
    torchtitan \
    bash -c 'echo HEAD; pwd; ls -l ./run_train.sh; NNODE=4 NGPU=4 LOG_RANK=0 MODULE=qwen3 CONFIG=qwen3_1b NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
 
@@ -716,7 +707,6 @@ for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
     "docker exec -w /workspace/torchtitan \
      -e NCCL_SOCKET_IFNAME=ens32 \
      -e GLOO_SOCKET_IFNAME=ens32 \
-     -e NCCL_PROTO=simple \
      torchtitan \
      bash -c 'echo WORKER; pwd; ls -l ./run_train.sh; NNODE=4 NGPU=4 LOG_RANK=0 MODULE=qwen3 CONFIG=qwen3_1b NODE_RANK=$NODE_RANK MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
   NODE_RANK=$((NODE_RANK + 1))
@@ -765,7 +755,6 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no ubuntu@$HEAD_PUBLIC_IP \
   "docker exec -w /workspace/torchtitan \
    -e NCCL_SOCKET_IFNAME=ens32 \
    -e GLOO_SOCKET_IFNAME=ens32 \
-   -e NCCL_PROTO=simple \
    torchtitan \
    bash -c 'echo HEAD; pwd; ls -l ./run_train.sh; NNODE=4 NGPU=8 LOG_RANK=0 MODULE=qwen3 CONFIG=qwen3_9b NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
 
@@ -777,7 +766,6 @@ for WORKER_IP in $WORKER1_PRIVATE_IP $WORKER2_PRIVATE_IP $WORKER3_PRIVATE_IP; do
     "docker exec -w /workspace/torchtitan \
      -e NCCL_SOCKET_IFNAME=ens32 \
      -e GLOO_SOCKET_IFNAME=ens32 \
-     -e NCCL_PROTO=simple \
      torchtitan \
      bash -c 'echo WORKER; pwd; ls -l ./run_train.sh; NNODE=4 NGPU=8 LOG_RANK=0 MODULE=qwen3 CONFIG=qwen3_9b NODE_RANK=$NODE_RANK MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=29500 ./run_train.sh'" &
   NODE_RANK=$((NODE_RANK + 1))

@@ -141,7 +141,7 @@ def build_experiments(
                     config=base_config,
                     pp=8,
                     dp=2,
-                    ep=ep_degree,
+                    ep=1,
                     zero_level=zero_level,
                     schedule="1f1b",
                     mb_size=mb_size,

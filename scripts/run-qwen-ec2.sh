@@ -88,12 +88,12 @@ for WORKER_IP in $WORKERS; do
 done
 
 # Launch head
-$SSH ubuntu@$HEAD_PUBLIC_IP   "docker exec -w /workspace/torchtitan    -e NCCL_SOCKET_IFNAME=ens32    -e GLOO_SOCKET_IFNAME=ens32    -e NCCL_PROTO=simple    torchtitan    bash -lc 'echo HEAD; pwd; ls -l $TRAIN_SCRIPT;      NNODE=$NNODE NGPU=$NGPU LOG_RANK=$LOG_RANK MODULE=$MODULE CONFIG=$CONFIG      NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=$MASTER_PORT      $TRAIN_SCRIPT $TRAIN_ARGS_QUOTED'" &
+$SSH ubuntu@$HEAD_PUBLIC_IP   "docker exec -w /workspace/torchtitan    -e NCCL_SOCKET_IFNAME=ens32    -e GLOO_SOCKET_IFNAME=ens32    torchtitan    bash -lc 'echo HEAD; pwd; ls -l $TRAIN_SCRIPT;      NNODE=$NNODE NGPU=$NGPU LOG_RANK=$LOG_RANK MODULE=$MODULE CONFIG=$CONFIG      NODE_RANK=0 MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=$MASTER_PORT      $TRAIN_SCRIPT $TRAIN_ARGS_QUOTED'" &
 
 # Launch workers
 NODE_RANK=1
 for WORKER_IP in $WORKERS; do
-  $SSH -o "$PROXY" ubuntu@$WORKER_IP     "docker exec -w /workspace/torchtitan      -e NCCL_SOCKET_IFNAME=ens32      -e GLOO_SOCKET_IFNAME=ens32      -e NCCL_PROTO=simple      torchtitan      bash -lc 'echo WORKER; pwd; ls -l $TRAIN_SCRIPT;        NNODE=$NNODE NGPU=$NGPU LOG_RANK=$LOG_RANK MODULE=$MODULE CONFIG=$CONFIG        NODE_RANK=$NODE_RANK MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=$MASTER_PORT        $TRAIN_SCRIPT $TRAIN_ARGS_QUOTED'" &
+  $SSH -o "$PROXY" ubuntu@$WORKER_IP     "docker exec -w /workspace/torchtitan      -e NCCL_SOCKET_IFNAME=ens32      -e GLOO_SOCKET_IFNAME=ens32      torchtitan      bash -lc 'echo WORKER; pwd; ls -l $TRAIN_SCRIPT;        NNODE=$NNODE NGPU=$NGPU LOG_RANK=$LOG_RANK MODULE=$MODULE CONFIG=$CONFIG        NODE_RANK=$NODE_RANK MASTER_ADDR=$HEAD_PRIVATE_IP MASTER_PORT=$MASTER_PORT        $TRAIN_SCRIPT $TRAIN_ARGS_QUOTED'" &
   NODE_RANK=$((NODE_RANK + 1))
 done
 
