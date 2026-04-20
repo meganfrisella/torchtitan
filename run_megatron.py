@@ -247,7 +247,8 @@ def build_training_args(
 
 
 def main():
-    os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
+    # TODO: 
+    # os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
 
     args = parse_args()
     os.makedirs(args.tensorboard_dir, exist_ok=True)
@@ -277,7 +278,7 @@ def main():
         f"--nproc_per_node={args.nproc_per_node}",
         f"--nnodes={args.nnodes}",
         f"--node_rank={node_rank}",
-        "--rdzv_backend=static",
+        "--rdzv_backend=static", # TODO:
         f"--master_addr={master_addr}",
         f"--master_port={args.master_port}",
         "pretrain_gpt.py",

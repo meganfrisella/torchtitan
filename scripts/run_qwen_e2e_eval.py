@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
 import atexit
+import argparse
 import csv
 import json
 import math
@@ -36,6 +36,8 @@ DS_MEM_RE = re.compile(r"\[rank(\d+)\]\s+peak_memory_allocated_gb=([\d.]+)\s+pea
 MG_ITER_RE = re.compile(r"elapsed time per iteration \(ms\):\s*([\d.]+)")
 MG_MEM_RE = re.compile(r"\[Rank\s+(\d+)\].*?max allocated:\s*([\d.]+)\s*\|")
 OOM_RE = re.compile(r"(?:cuda\s+out\s+of\s+memory|out\s+of\s+memory|std::bad_alloc|\boom\b)", re.IGNORECASE)
+WATCHDOG_TIMEOUT_RE = re.compile(r"Watchdog caught collective operation timeout|Process group watchdog thread terminated with exception", re.IGNORECASE)
+CHILD_FAILED_RE = re.compile(r"ChildFailedError|ERROR conda\.cli\.main_run:execute", re.IGNORECASE)
 DEFAULT_TORCHTITAN_PYTHONPATH = "/workspace/torchtitan"
 DEFAULT_SCHEDULE_SWEEP = ("1f1b", "interleaved1f1b", "zerobubble", "dualpipe")
 DEFAULT_SYSTEMS = ("torchtitan", "megatron", "deepspeed", "piper")
@@ -92,7 +94,6 @@ class Result:
     failure_reason: str
 
 
-_CLEANUP_DONE = False
 _ACTIVE_CHILD: subprocess.Popen[str] | None = None
 
 
@@ -178,7 +179,7 @@ def build_experiments(
         "deepspeed": ("zero1",),
         "piper": ("zero1", "zero2", "zero3"),
     }
-    zero_sweep_values = (4, 6, 8)
+    zero_sweep_values = (16, 24, 32, 34, 36, 38, 40)
     schedule_defaults = {
         "config": "qwen3_9b",
         "pp": 8,
@@ -694,6 +695,8 @@ def parse_log(
 
     if system == "megatron":
         iter_times_ms = [float(m.group(1)) for m in MG_ITER_RE.finditer(text)]
+        if len(iter_times_ms) > 5:
+            iter_times_ms = iter_times_ms[-5:]
         peak: dict[int, float] = {}
         for m in MG_MEM_RE.finditer(text):
             peak[int(m.group(1))] = float(m.group(2)) / 1024.0
@@ -737,6 +740,10 @@ def parse_log(
             return iter_mean, iter_std, peak_summary, is_oom, final_reason, str(metrics_path)
         if is_oom:
             return None, None, "", True, "oom", ""
+        if remote_metrics_path is not None:
+            # "Benchmark metrics saved to" appeared in the log — the run completed successfully even
+            # if we could not fetch or parse the metrics file (e.g. SSH no longer available).
+            return iter_mean, iter_std, peak_summary, is_oom, "", ""
         return None, None, "", False, ("missing_metrics" if returncode == 0 else f"exit_code={returncode}"), ""
 
     return None, None, "", is_oom, reason, ""
@@ -1108,59 +1115,6 @@ def _ssh_worker_command(worker_ip: str, remote_command: str) -> list[str]:
     ]
 
 
-def _remote_hosts() -> list[tuple[str, str, str | None]]:
-    hosts: list[tuple[str, str, str | None]] = []
-    head_public_ip = os.environ.get("HEAD_PUBLIC_IP")
-    if head_public_ip:
-        hosts.append(("head", "head", head_public_ip))
-    for idx in range(1, 5):
-        worker_ip = os.environ.get(f"WORKER{idx}_PRIVATE_IP")
-        if worker_ip:
-            hosts.append((f"worker{idx}", "worker", worker_ip))
-    return hosts
-
-
-def _cleanup_remote_launchers() -> None:
-    global _CLEANUP_DONE
-    if _CLEANUP_DONE:
-        return
-    if not os.environ.get("SSH_KEY") or not os.environ.get("HEAD_PUBLIC_IP"):
-        return
-
-    remote_command = (
-        "for port in 29500 29501 29600; do "
-        "pids=$(sudo ss -ltnp \"( sport = :$port )\" | sed -n \"s/.*pid=\\([0-9]\\+\\).*/\\1/p\" | sort -u); "
-        "for pid in $pids; do sudo kill -9 \"$pid\" || true; done; "
-        "done; "
-        "sudo pkill -9 -f pt_elastic || true; "
-        "sudo pkill -9 -f torchrun || true; "
-        "sudo pkill -9 -f torchtitan.train || true; "
-        "sudo pkill -9 -f run_train.sh || true; "
-        "sudo pkill -9 -f run_train_nsys.sh || true; "
-        "sudo pkill -9 -f run_megatron.py || true; "
-        "sudo pkill -9 -f pretrain_gpt.py || true; "
-        "sudo pkill -9 -f run_deepspeed.py || true; "
-        "sudo fuser -k 29500/tcp || true; "
-        "sudo fuser -k 29501/tcp || true; "
-        "sudo fuser -k 29600/tcp || true; "
-        "docker exec torchtitan bash -lc "
-        "\"pkill -9 -f pt_elastic || true; "
-        "pkill -9 -f torchrun || true; "
-        "pkill -9 -f torchtitan.train || true; "
-        "pkill -9 -f run_train.sh || true; "
-        "pkill -9 -f run_train_nsys.sh || true; "
-        "pkill -9 -f run_megatron.py || true; "
-        "pkill -9 -f pretrain_gpt.py || true; "
-        "pkill -9 -f run_deepspeed.py || true\" || true"
-    )
-
-    for _, node_kind, host in _remote_hosts():
-        command = _ssh_head_command(remote_command) if node_kind == "head" else _ssh_worker_command(str(host), remote_command)
-        subprocess.run(command, check=False, capture_output=True, text=True)
-
-    _CLEANUP_DONE = True
-
-
 def _terminate_active_child() -> None:
     global _ACTIVE_CHILD
     child = _ACTIVE_CHILD
@@ -1178,12 +1132,49 @@ def _terminate_active_child() -> None:
     _ACTIVE_CHILD = None
 
 
+def _cleanup_remote_launchers() -> None:
+    _terminate_active_child()
+
+
 def _handle_exit_signal(signum: int, _frame) -> None:
     signal_name = signal.Signals(signum).name
-    print(f"received {signal_name}, cleaning up remote launchers...", file=sys.stderr)
+    print(f"received {signal_name}, terminating active launcher...", file=sys.stderr)
     _terminate_active_child()
-    _cleanup_remote_launchers()
     raise SystemExit(128 + signum)
+
+
+def _detect_terminal_failure_in_log(log_path: Path) -> str | None:
+    if not log_path.exists():
+        return None
+    text = _read_text_lossy(log_path)
+    if OOM_RE.search(text):
+        return "oom"
+    if WATCHDOG_TIMEOUT_RE.search(text):
+        return "watchdog_timeout"
+    if CHILD_FAILED_RE.search(text):
+        return "child_failed"
+    return None
+
+
+def _wait_for_process_or_early_failure(log_path: Path, *, poll_interval_s: float = 5.0) -> tuple[int, str]:
+    global _ACTIVE_CHILD
+    child = _ACTIVE_CHILD
+    if child is None:
+        raise RuntimeError("no active child process to monitor")
+
+    while True:
+        returncode = child.poll()
+        if returncode is not None:
+            _ACTIVE_CHILD = None
+            return returncode, ""
+
+        early_reason = _detect_terminal_failure_in_log(log_path)
+        if early_reason is not None:
+            _terminate_active_child()
+            returncode = child.returncode if child.returncode is not None else -15
+            return returncode, early_reason
+
+        time.sleep(poll_interval_s)
 
 
 def _scp_from_remote(
