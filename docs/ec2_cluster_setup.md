@@ -31,7 +31,7 @@ export SSH_KEY=~/.ssh/ray-autoscaler_us-east-2.pem
 export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 export ECR_REGISTRY=${ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com
 # export IMAGE=${ECR_REGISTRY}/torchtitan-70b:latest  # Option A (ECR); for Option B use:
-export IMAGE=mfris/torchtitan-70b:latest
+export IMAGE=mfris/torchtitan:megatron-deepspeed
 ```
 
 ---

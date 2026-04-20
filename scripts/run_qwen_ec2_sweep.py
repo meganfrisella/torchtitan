@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import os
 import shlex
 import subprocess
 import sys
@@ -29,6 +30,7 @@ DEFAULT_PARALLEL_VALUES = (1, 2, 4)
 DEFAULT_SCHEDULES = ("1f1b", "interleaved1f1b", "zerobubble", "dualpipe")
 DEFAULT_ZERO_LEVELS = ("zero1", "zero2", "zero3")
 DEFAULT_BASE_CONFIG = "qwen3_9b"
+DEFAULT_TORCHTITAN_PYTHONPATH = "/workspace/torchtitan"
 RUNTIME_SCHEDULES = {
     "1f1b": "1F1B",
     "interleaved1f1b": "Interleaved1F1B",
@@ -323,6 +325,8 @@ def main() -> int:
             continue
 
         try:
+            env = dict(os.environ)
+            env.setdefault("TORCHTITAN_PYTHONPATH", DEFAULT_TORCHTITAN_PYTHONPATH)
             with open(log_path, "w", encoding="utf-8") as log_file:
                 result = subprocess.run(
                     command,
@@ -330,6 +334,7 @@ def main() -> int:
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    env=env,
                 )
             if result.returncode == 0:
                 continue

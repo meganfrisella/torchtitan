@@ -59,3 +59,56 @@ wait
 ```
 
 Add `--nsight` to also copy Nsight profiles into `out/ec2/nsight-head` and `out/ec2/nsight-workerX`.
+
+
+# Kill stuff
+
+```bash
+ for HOST in "$HEAD_PUBLIC_IP" "$WORKER1_PRIVATE_IP" "$WORKER2_PRIVATE_IP" "$WORKER3_PRIVATE_IP"; do
+    [ -z "$HOST" ] && continue
+
+    if [ "$HOST" = "$HEAD_PUBLIC_IP" ]; then
+      SSH_CMD=(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ubuntu@"$HOST")
+    else
+      SSH_CMD=(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no \
+        -o "ProxyCommand=ssh -i $SSH_KEY -o StrictHostKeyChecking=no -W %h:%p ubuntu@$HEAD_PUBLIC_IP"
+  \
+        ubuntu@"$HOST")
+    fi
+
+    "${SSH_CMD[@]}" '
+      echo "=== HOST $(hostname) ==="
+
+      for port in 29500 29501 29600; do
+        pids=$(sudo ss -ltnp "( sport = :$port )" | sed -n "s/.*pid=\([0-9]\+\).*/\1/p" | sort -u)
+        for pid in $pids; do
+          sudo kill -9 "$pid" || true
+        done
+      done
+
+      sudo pkill -9 -f pt_elastic || true
+      sudo pkill -9 -f torchrun || true
+      sudo pkill -9 -f run_megatron.py || true
+      sudo pkill -9 -f pretrain_gpt.py || true
+      sudo pkill -9 -f megatron || true
+      sudo pkill -9 -f run_deepspeed.py || true
+      sudo pkill -9 -f torchtitan.train || true
+      sudo pkill -9 -f run_train.sh || true
+      sudo pkill -9 -f run_train_nsys.sh || true
+
+      gpu_pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | awk
+  "NF" | sort -u)
+      for pid in $gpu_pids; do
+        sudo kill -9 "$pid" || true
+      done
+
+      docker exec torchtitan bash -lc "
+        pkill -9 -f pt_elastic || true
+        pkill -9 -f torchrun || true
+        pkill -9 -f run_megatron.py || true
+        pkill -9 -f pretrain_gpt.py || true
+      echo
+      nvidia-smi
+    '
+  done
+```
