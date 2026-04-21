@@ -7,6 +7,7 @@ MODEL="${MODEL:-qwen3_1b}"
 MASTER_PORT="${MASTER_PORT:-29500}"
 LOG_TO_FILE=false
 OUT_DIR="/m-coriander/coriander/mfris/piper-eval"
+NSIGHT=false
 TRAIN_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -17,10 +18,16 @@ while [[ $# -gt 0 ]]; do
         --master-port) MASTER_PORT="$2"; shift 2 ;;
         --log-to-file) LOG_TO_FILE=true; shift ;;
         --out-dir) OUT_DIR="$2"; shift 2 ;;
+        --nsight) NSIGHT=true; shift ;;
         --) shift; TRAIN_ARGS=("$@"); break ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+
+NSIGHT_FLAG=""
+if $NSIGHT; then
+    NSIGHT_FLAG="--nsight"
+fi
 
 WORKERS=""
 for i in $(seq 1 $((NNODE - 1))); do
@@ -51,7 +58,7 @@ if ((${#TRAIN_ARGS[@]})); then
     TRAIN_ARGS_QUOTED=$(printf '%q ' "${TRAIN_ARGS[@]}")
 fi
 
-LOWEST_LEVEL_CMD="conda run -n megatron python $TORCHTITAN_WORKSPACE/run_megatron.py --model $MODEL --nnodes $NNODE --nproc-per-node $NGPU --master-addr $HEAD_PRIVATE_IP --master-port $MASTER_PORT --disable-background-mode ${TRAIN_ARGS_QUOTED}"
+LOWEST_LEVEL_CMD="conda run -n megatron python $TORCHTITAN_WORKSPACE/run_megatron.py --model $MODEL --nnodes $NNODE --nproc-per-node $NGPU --master-addr $HEAD_PRIVATE_IP --master-port $MASTER_PORT --disable-background-mode $NSIGHT_FLAG ${TRAIN_ARGS_QUOTED}"
 echo "Lowest-level command: $LOWEST_LEVEL_CMD"
 
 $SSH ubuntu@$HEAD_PUBLIC_IP "docker exec torchtitan mkdir -p /m-coriander/coriander/mfris/piper-eval"
@@ -73,6 +80,7 @@ $SSH ubuntu@$HEAD_PUBLIC_IP \
         --master-addr $HEAD_PRIVATE_IP \
         --master-port $MASTER_PORT \
         --disable-background-mode \
+        $NSIGHT_FLAG \
         $TRAIN_ARGS_QUOTED'" &
 
 NODE_RANK=1
@@ -91,6 +99,7 @@ for WORKER_IP in $WORKERS; do
           --master-addr $HEAD_PRIVATE_IP \
           --master-port $MASTER_PORT \
           --disable-background-mode \
+          $NSIGHT_FLAG \
           $TRAIN_ARGS_QUOTED'" &
   NODE_RANK=$((NODE_RANK + 1))
 done

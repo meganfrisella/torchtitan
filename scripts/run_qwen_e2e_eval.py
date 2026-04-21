@@ -162,7 +162,7 @@ def build_experiments(
     scalability_defaults = {
         "config": "qwen3_9b",
         "ep": 1,
-        "zero_level": "zero1",
+        "zero_level": "zero0",
         "schedule": "1f1b",
         "mb_size": 4,
     }
@@ -198,17 +198,17 @@ def build_experiments(
         "mb_size": 4,
     }
     supported_schedules_by_system = {
-        "torchtitan": {"1f1b", "interleaved1f1b"}, #, "zerobubble", "dualpipe"},
+        "torchtitan": {"1f1b", "interleaved1f1b", "dualpipe"},
         "megatron": {"1f1b", "interleaved1f1b"},
         "deepspeed": {"1f1b"},
-        "piper": {"1f1b", "interleaved1f1b"}, #, "zerobubble", "dualpipe"},
+        "piper": {"1f1b", "interleaved1f1b", "dualpipe"},
     }
 
     for system in systems:
         if "scalability" in enabled_sweeps:
             defaults = dict(scalability_defaults)
-            for pp in (4, 8):
-                for dp in (1, 2, 4):
+            for pp in (4,8,):
+                for dp in (1,2,4):
                     experiments.append(
                         Experiment(
                             system=system,
@@ -256,25 +256,24 @@ def build_experiments(
             for schedule in schedule_sweep:
                 if schedule not in supported_schedules_by_system[system]:
                     continue
-                for dp in (4,):
-                    experiments.append(
-                        Experiment(
-                            system=system,
-                            sweep="schedule",
-                            config=str(defaults["config"]),
-                            pp=int(defaults["pp"]),
-                            dp=dp,
-                            ep=int(defaults["ep"]),
-                            zero_level=str(defaults["zero_level"]),
-                            schedule=schedule,
-                            mb_size=int(defaults["mb_size"]),
-                            seq_len=seq_len,
-                            gradient_accumulation=gradient_accumulation,
-                            bucket_size_mb=bucket_size_mb,
-                            ar_a2a_same_stream=ar_a2a_same_stream,
-                            overlap_chunks=overlap_chunks,
-                        )
+                experiments.append(
+                    Experiment(
+                        system=system,
+                        sweep="schedule",
+                        config=str(defaults["config"]),
+                        pp=int(defaults["pp"]),
+                        dp=int(defaults["pp"]),
+                        ep=int(defaults["ep"]),
+                        zero_level=str(defaults["zero_level"]),
+                        schedule=schedule,
+                        mb_size=int(defaults["mb_size"]),
+                        seq_len=seq_len,
+                        gradient_accumulation=gradient_accumulation,
+                        bucket_size_mb=bucket_size_mb,
+                        ar_a2a_same_stream=ar_a2a_same_stream,
+                        overlap_chunks=overlap_chunks,
                     )
+                )
 
         if "local" in enabled_sweeps:
             defaults = dict(local_defaults)
@@ -386,10 +385,12 @@ def make_command(
             command.extend(["--parallelism.fsdp_reshard_after_forward", "never"])
         elif exp.zero_level == "zero3":
             command.extend(["--parallelism.fsdp_reshard_after_forward", "always"])
-        if exp.sweep == "dualpipe":
+        if exp.sweep == "schedule":
             command.append("--compile.no-enable")
     elif exp.system == "megatron":
         command.extend(["--nnode", str(node_count(exp)), "--ngpu", str(exp.pp)])
+        if enable_nsight:
+            command.append("--nsight")
         command.extend(
             [
                 "--model",
@@ -477,10 +478,10 @@ def make_command(
                 "--gradient-accumulation" if exp.gradient_accumulation else "--no-gradient-accumulation",
                 "--ar-a2a-same-stream" if exp.ar_a2a_same_stream else "--no-ar-a2a-same-stream",
                 "--overlap-chunks" if exp.overlap_chunks else "--no-overlap-chunks",
-                "--use-inductor" if exp.sweep != "dualpipe" else "--no-use-inductor",
+                "--use-inductor" if exp.sweep != "schedule" else "--no-use-inductor",
             ]
         )
-        if exp.ep:
+        if exp.ep > 1:
             command.append("--ep")
         if enable_nsight:
             command.append("--nsight")
@@ -536,7 +537,7 @@ def inner_command(
             args.extend(["--parallelism.fsdp_reshard_after_forward", "never"])
         elif exp.zero_level == "zero3":
             args.extend(["--parallelism.fsdp_reshard_after_forward", "always"])
-        if exp.sweep == "dualpipe":
+        if exp.sweep == "schedule":
             args.append("--compile.no-enable")
         env_prefix = [
             f"PYTHONPATH={DEFAULT_TORCHTITAN_PYTHONPATH}",
@@ -662,9 +663,9 @@ def inner_command(
         "--gradient-accumulation" if exp.gradient_accumulation else "--no-gradient-accumulation",
         "--ar-a2a-same-stream" if exp.ar_a2a_same_stream else "--no-ar-a2a-same-stream",
         "--overlap-chunks" if exp.overlap_chunks else "--no-overlap-chunks",
-        "--use-inductor" if exp.sweep != "dualpipe" else "--no-use-inductor",
+        "--use-inductor" if exp.sweep != "schedule" else "--no-use-inductor",
     ]
-    if exp.ep:
+    if exp.ep > 1:
         args.append("--ep")
     if enable_nsight:
         args.append("--nsight")
@@ -1093,7 +1094,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bucket-size-mb", type=float, default=None, help="Piper-only bucket size in MB")
     parser.add_argument("--gradient-accumulation", dest="gradient_accumulation", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--ar-a2a-same-stream", dest="ar_a2a_same_stream", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--overlap-chunks", dest="overlap_chunks", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--overlap-chunks", dest="overlap_chunks", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--piper-warmup", type=int, default=3)
     parser.add_argument("--piper-iters", type=int, default=10)
     parser.add_argument("--piper-ray-port", type=int, default=6379)
@@ -1595,6 +1596,40 @@ def _fetch_remote_dag_order_logs(exp: Experiment, remote_output_dir: str, exp_lo
     return copied_paths
 
 
+def _fetch_megatron_nsight_traces(exp: Experiment, log_path: Path) -> None:
+    nsight_dir = log_path.parent / (log_path.stem + "_nsight")
+    nsight_dir.mkdir(parents=True, exist_ok=True)
+    n_nodes = node_count(exp)
+    stage_path = f"/tmp/megatron_nsight_staged_{int(time.time())}"
+    nodes: list[tuple[str, str | None]] = [("head", None)]
+    for i in range(1, n_nodes):
+        worker_ip = os.environ.get(f"WORKER{i}_PRIVATE_IP")
+        if worker_ip:
+            nodes.append((f"worker{i}", worker_ip))
+    for node_label, worker_ip in nodes:
+        docker_cp_cmd = f"docker cp torchtitan:/tmp/megatron_nsight {stage_path}"
+        ssh_cmd = _ssh_head_command(docker_cp_cmd) if worker_ip is None else _ssh_worker_command(worker_ip, docker_cp_cmd)
+        result = subprocess.run(ssh_cmd, check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"  [nsight] no traces on {node_label} (docker cp failed)", file=sys.stderr)
+            continue
+        local_node_dir = nsight_dir / node_label
+        local_node_dir.mkdir(parents=True, exist_ok=True)
+        ok = _scp_from_remote(
+            node_kind="head" if worker_ip is None else "worker",
+            remote_host=worker_ip,
+            remote_path=f"{stage_path}/.",
+            destination=local_node_dir,
+        )
+        if ok:
+            print(f"  [nsight] fetched traces from {node_label} → {local_node_dir}")
+        else:
+            print(f"  [nsight] scp failed for {node_label}", file=sys.stderr)
+        cleanup_cmd = f"rm -rf {stage_path}"
+        cleanup_ssh = _ssh_head_command(cleanup_cmd) if worker_ip is None else _ssh_worker_command(worker_ip, cleanup_cmd)
+        subprocess.run(cleanup_ssh, check=False, capture_output=True)
+
+
 def _require_piper_env() -> None:
     missing = [name for name in ("SSH_KEY", "HEAD_PUBLIC_IP") if not os.environ.get(name)]
     if missing:
@@ -1750,6 +1785,8 @@ def main() -> int:
                     _ACTIVE_CHILD = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT, text=True, env=env)
                     returncode = _ACTIVE_CHILD.wait()
                     _ACTIVE_CHILD = None
+                if args.nsight and system == "megatron":
+                    _fetch_megatron_nsight_traces(exp, log_path)
                 iter_mean, iter_std, peak_str, is_oom, reason, metrics_path = parse_log(
                     system,
                     log_path,
