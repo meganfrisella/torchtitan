@@ -256,7 +256,7 @@ def qwen3_1b() -> Trainer.Config:
         activation_checkpoint=ActivationCheckpointConfig(
             mode="none",
         ),
-        # compile=CompileConfig(enable=True),
+        compile=CompileConfig(enable=True),
     )
 
 

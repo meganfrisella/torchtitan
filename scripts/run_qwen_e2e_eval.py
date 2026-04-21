@@ -188,11 +188,20 @@ def build_experiments(
         "zero_level": "zero1",
         "mb_size": 4,
     }
+    local_defaults = {
+        "config": "qwen3_1b",
+        "pp": 1,
+        "dp": 1,
+        "ep": 1,
+        "zero_level": "zero1",
+        "schedule": "1f1b",
+        "mb_size": 4,
+    }
     supported_schedules_by_system = {
-        "torchtitan": {"1f1b", "interleaved1f1b", "zerobubble", "dualpipe"},
+        "torchtitan": {"1f1b", "interleaved1f1b"}, #, "zerobubble", "dualpipe"},
         "megatron": {"1f1b", "interleaved1f1b"},
         "deepspeed": {"1f1b"},
-        "piper": {"1f1b", "interleaved1f1b", "zerobubble", "dualpipe"},
+        "piper": {"1f1b", "interleaved1f1b"}, #, "zerobubble", "dualpipe"},
     }
 
     for system in systems:
@@ -247,29 +256,53 @@ def build_experiments(
             for schedule in schedule_sweep:
                 if schedule not in supported_schedules_by_system[system]:
                     continue
-                experiments.append(
-                    Experiment(
-                        system=system,
-                        sweep="schedule",
-                        config=str(defaults["config"]),
-                        pp=int(defaults["pp"]),
-                        dp=int(defaults["dp"]),
-                        ep=int(defaults["ep"]),
-                        zero_level=str(defaults["zero_level"]),
-                        schedule=schedule,
-                        mb_size=int(defaults["mb_size"]),
-                        seq_len=seq_len,
-                        gradient_accumulation=gradient_accumulation,
-                        bucket_size_mb=bucket_size_mb,
-                        ar_a2a_same_stream=ar_a2a_same_stream,
-                        overlap_chunks=overlap_chunks,
+                for dp in (4,):
+                    experiments.append(
+                        Experiment(
+                            system=system,
+                            sweep="schedule",
+                            config=str(defaults["config"]),
+                            pp=int(defaults["pp"]),
+                            dp=dp,
+                            ep=int(defaults["ep"]),
+                            zero_level=str(defaults["zero_level"]),
+                            schedule=schedule,
+                            mb_size=int(defaults["mb_size"]),
+                            seq_len=seq_len,
+                            gradient_accumulation=gradient_accumulation,
+                            bucket_size_mb=bucket_size_mb,
+                            ar_a2a_same_stream=ar_a2a_same_stream,
+                            overlap_chunks=overlap_chunks,
+                        )
                     )
+
+        if "local" in enabled_sweeps:
+            defaults = dict(local_defaults)
+            experiments.append(
+                Experiment(
+                    system=system,
+                    sweep="local",
+                    config=str(defaults["config"]),
+                    pp=int(defaults["pp"]),
+                    dp=int(defaults["dp"]),
+                    ep=int(defaults["ep"]),
+                    zero_level=str(defaults["zero_level"]),
+                    schedule=str(defaults["schedule"]),
+                    mb_size=int(defaults["mb_size"]),
+                    seq_len=seq_len,
+                    gradient_accumulation=gradient_accumulation,
+                    bucket_size_mb=bucket_size_mb,
+                    ar_a2a_same_stream=ar_a2a_same_stream,
+                    overlap_chunks=overlap_chunks,
                 )
+            )
 
     return experiments
 
 
 def local_batch_size(exp: Experiment) -> int:
+    if exp.sweep == "local":
+        return exp.mb_size
     return exp.pp * 2 * exp.mb_size
 
 
@@ -286,6 +319,8 @@ def experiment_label(exp: Experiment) -> str:
         return f"pp={exp.pp}, dp={exp.dp}"
     if exp.sweep == "zero":
         return f"zero={exp.zero_level}, mb={exp.mb_size}"
+    if exp.sweep == "local":
+        return "local"
     return exp.schedule
 
 
@@ -351,7 +386,7 @@ def make_command(
             command.extend(["--parallelism.fsdp_reshard_after_forward", "never"])
         elif exp.zero_level == "zero3":
             command.extend(["--parallelism.fsdp_reshard_after_forward", "always"])
-        if exp.sweep == "schedule":
+        if exp.sweep == "dualpipe":
             command.append("--compile.no-enable")
     elif exp.system == "megatron":
         command.extend(["--nnode", str(node_count(exp)), "--ngpu", str(exp.pp)])
@@ -442,7 +477,7 @@ def make_command(
                 "--gradient-accumulation" if exp.gradient_accumulation else "--no-gradient-accumulation",
                 "--ar-a2a-same-stream" if exp.ar_a2a_same_stream else "--no-ar-a2a-same-stream",
                 "--overlap-chunks" if exp.overlap_chunks else "--no-overlap-chunks",
-                "--use-inductor" if exp.sweep != "schedule" else "--no-use-inductor",
+                "--use-inductor" if exp.sweep != "dualpipe" else "--no-use-inductor",
             ]
         )
         if exp.ep:
@@ -501,7 +536,7 @@ def inner_command(
             args.extend(["--parallelism.fsdp_reshard_after_forward", "never"])
         elif exp.zero_level == "zero3":
             args.extend(["--parallelism.fsdp_reshard_after_forward", "always"])
-        if exp.sweep == "schedule":
+        if exp.sweep == "dualpipe":
             args.append("--compile.no-enable")
         env_prefix = [
             f"PYTHONPATH={DEFAULT_TORCHTITAN_PYTHONPATH}",
@@ -627,7 +662,7 @@ def inner_command(
         "--gradient-accumulation" if exp.gradient_accumulation else "--no-gradient-accumulation",
         "--ar-a2a-same-stream" if exp.ar_a2a_same_stream else "--no-ar-a2a-same-stream",
         "--overlap-chunks" if exp.overlap_chunks else "--no-overlap-chunks",
-        "--use-inductor" if exp.sweep != "schedule" else "--no-use-inductor",
+        "--use-inductor" if exp.sweep != "dualpipe" else "--no-use-inductor",
     ]
     if exp.ep:
         args.append("--ep")
@@ -694,9 +729,9 @@ def parse_log(
         return mean, variance**0.5, peak_str, is_oom, reason, ""
 
     if system == "megatron":
-        iter_times_ms = [float(m.group(1)) for m in MG_ITER_RE.finditer(text)]
-        if len(iter_times_ms) > 5:
-            iter_times_ms = iter_times_ms[-5:]
+        # Megatron logs include warmup and earlier steady-state samples; only score the
+        # trailing five iteration times to keep the reported stddev representative.
+        iter_times_ms = [float(m.group(1)) for m in MG_ITER_RE.finditer(text)][-5:]
         peak: dict[int, float] = {}
         for m in MG_MEM_RE.finditer(text):
             peak[int(m.group(1))] = float(m.group(2)) / 1024.0
@@ -989,6 +1024,8 @@ def experiment_label_from_result(row: Result) -> str:
         return f"(pp={row.pp}, dp={row.dp})"
     if row.sweep == "zero":
         return f"(zero={row.zero_level}, mb={row.mb_size})"
+    if row.sweep == "local":
+        return "(local)"
     return row.schedule
 
 
@@ -1003,6 +1040,9 @@ def write_sweep_outputs(out_dir: Path, sweep: str, rows: list[Result]) -> None:
     elif sweep == "zero":
         title = f"{rows[0].system} Qwen3 ZeRO Sweep"
         subtitle = f"pp={rows[0].pp}, dp={rows[0].dp}, schedule=1f1b, seq_len={rows[0].seq_len}"
+    elif sweep == "local":
+        title = f"{rows[0].system} Qwen3 Local Sweep"
+        subtitle = f"pp={rows[0].pp}, dp={rows[0].dp}, schedule={rows[0].schedule}, seq_len={rows[0].seq_len}"
     else:
         title = f"{rows[0].system} Qwen3 Schedule Sweep"
         subtitle = f"pp={rows[0].pp}, dp={rows[0].dp}, zero={rows[0].zero_level}, seq_len={rows[0].seq_len}"
@@ -1019,7 +1059,7 @@ def write_combined_sweep_outputs(base_out: Path, systems: Iterable[str]) -> None
     for system in systems:
         all_rows.extend(load_results_csv(base_out / system / "all_results.csv"))
 
-    for sweep in ("scalability", "zero", "schedule"):
+    for sweep in ("scalability", "zero", "schedule", "local"):
         rows = [row for row in all_rows if row.sweep == sweep]
         if not rows:
             continue
@@ -1030,6 +1070,9 @@ def write_combined_sweep_outputs(base_out: Path, systems: Iterable[str]) -> None
         elif sweep == "zero":
             title = "Qwen3 ZeRO Sweep Across Systems"
             subtitle = f"pp={rows[0].pp}, dp={rows[0].dp}, schedule=1f1b, seq_len={rows[0].seq_len}"
+        elif sweep == "local":
+            title = "Qwen3 Local Sweep Across Systems"
+            subtitle = f"pp={rows[0].pp}, dp={rows[0].dp}, schedule={rows[0].schedule}, seq_len={rows[0].seq_len}"
         else:
             title = "Qwen3 Schedule Sweep Across Systems"
             subtitle = f"pp={rows[0].pp}, dp={rows[0].dp}, zero={rows[0].zero_level}, seq_len={rows[0].seq_len}"
@@ -1044,7 +1087,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seq-len", type=int, default=512, help="Sequence length override for all sweeps")
     parser.add_argument("--out-dir", default=None, help="Output directory. Default: out/e2e-eval/<timestamp>")
     parser.add_argument("--schedule-sweep", nargs="+", default=list(DEFAULT_SCHEDULE_SWEEP))
-    parser.add_argument("--sweeps", nargs="+", choices=["scalability", "zero", "schedule"], default=["scalability", "zero", "schedule"])
+    parser.add_argument("--sweeps", nargs="+", choices=["scalability", "zero", "schedule", "local"], default=["scalability", "zero", "schedule"])
     parser.add_argument("--nsight", action="store_true", help="Enable Nsight where supported")
     parser.add_argument("--dry-run", action="store_true", help="Plan experiments and output commands without running them")
     parser.add_argument("--bucket-size-mb", type=float, default=None, help="Piper-only bucket size in MB")
@@ -1067,6 +1110,8 @@ def piper_schedule_name(schedule: str) -> str:
 
 
 def piper_num_mbs(exp: Experiment) -> int:
+    if exp.sweep == "local":
+        return 1
     return exp.pp * 2
 
 
@@ -1748,7 +1793,7 @@ def main() -> int:
                 results.append(run_result)
 
             write_csv(system_out / "all_results.csv", results)
-            for sweep in ("scalability", "zero", "schedule"):
+            for sweep in ("scalability", "zero", "schedule", "local"):
                 write_sweep_outputs(system_out, sweep, [r for r in results if r.sweep == sweep])
             if any(r.status != "ok" for r in results):
                 overall_failed = True

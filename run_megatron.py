@@ -186,6 +186,7 @@ def build_training_args(
         "--hidden-dropout", "0.0",
         "--use-mcore-models",
         "--transformer-impl", "transformer_engine",
+        "--use-flash-attn",
         "--num-experts", str(model_config["num_experts"]),
         "--moe-router-topk", str(model_config["moe_router_topk"]),
         "--moe-ffn-hidden-size", str(model_config["moe_ffn_hidden_size"]),
@@ -193,6 +194,7 @@ def build_training_args(
         "--moe-router-load-balancing-type", "aux_loss",
         "--moe-aux-loss-coeff", "0.001",
         "--moe-token-dispatcher-type", "alltoall",
+        "--moe-grouped-gemm",
         "--tensor-model-parallel-size", str(tp),
         "--pipeline-model-parallel-size", str(pp),
         "--context-parallel-size", str(cp),
@@ -225,16 +227,19 @@ def build_training_args(
         # "--profile-step-end", "8",
         # "--pytorch-profiler-collect-shapes",
         "--no-gradient-accumulation-fusion",
-        "--use-distributed-optimizer",
-        "--overlap-grad-reduce",
-        "--overlap-param-gather",
-        "--data-parallel-sharding-strategy",
-        {
-            "zero1": "optim",
-            "zero2": "optim_grads",
-            "zero3": "optim_grads_params",
-        }[zero_level],
     ]
+    if dp > 1:
+        args.extend([
+            "--use-distributed-optimizer",
+            "--overlap-grad-reduce",
+            "--overlap-param-gather",
+            "--data-parallel-sharding-strategy",
+            {
+                "zero1": "optim",
+                "zero2": "optim_grads",
+                "zero3": "optim_grads_params",
+            }[zero_level],
+        ])
     if zero_level in ("zero2", "zero3"):
         args.append("--use-megatron-fsdp")
     if schedule == "interleaved1f1b":
