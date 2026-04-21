@@ -262,7 +262,7 @@ def build_experiments(
                         sweep="schedule",
                         config=str(defaults["config"]),
                         pp=int(defaults["pp"]),
-                        dp=int(defaults["pp"]),
+                        dp=int(defaults["dp"]),
                         ep=int(defaults["ep"]),
                         zero_level=str(defaults["zero_level"]),
                         schedule=schedule,
