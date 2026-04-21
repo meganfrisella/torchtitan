@@ -532,6 +532,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful, Configurable):
             ep=parallelism_config.expert_parallel_degree,
             etp=parallelism_config.expert_tensor_parallel_degree,
             world_size=world_size,
+            enable_ep_outer=parallelism_config.enable_ep_outer,
         )
 
     def batch_generator(

@@ -203,6 +203,16 @@ class ParallelismConfig:
     context_parallel_degree: int = 1
     """Context parallelism degree. 1 means disabled."""
 
+    enable_ep_outer: bool = False
+    """
+    If True, build the device mesh with Expert Parallel as the outermost (slowest-
+    varying) dimension and Pipeline Parallel inner, so EP peers are cross-node
+    and PP stages stay intra-node. Only meaningful when ep > 1.
+
+    Default sparse mesh ordering:  ("dp_replicate", "efsdp", "ep", "pp", "etp")
+    EP-outer sparse mesh ordering: ("ep", "dp_replicate", "efsdp", "pp", "etp")
+    """
+
     context_parallel_load_balancer: str | None = "headtail"
     """
     Load balancer type for context parallelism. Options:
