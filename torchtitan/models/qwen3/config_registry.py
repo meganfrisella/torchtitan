@@ -14,10 +14,12 @@ from torchtitan.config import (
     CompileConfig,
     TrainingConfig,
 )
+from torchtitan.config.configs import CommConfig
 from torchtitan.hf_datasets.text_datasets import (
     ChatDataLoader,
     HuggingFaceTextDataLoader,
 )
+from torchtitan.tools.profiling import ProfilingConfig
 from torchtitan.trainer import Trainer
 
 from . import model_registry
@@ -374,6 +376,92 @@ def qwen3_30b_single() -> Trainer.Config:
         ),
         # compile=CompileConfig(enable=True),
     )
+
+def qwen3_30b_pp8_ep4_dualpipe() -> Trainer.Config:
+    """DualPipeV PP=8 (intra-node) + EP=4 (cross-node) on Qwen3-MoE 30B-A3B.
+
+    Requires 4 nodes × 8 GPUs = 32 ranks. Dense product PP=8, so dp_shard is
+    auto-derived to 32/8 = 4 (FSDP across the batch dim).
+
+    Mesh layout with enable_ep_outer=True (EP outermost, PP inner):
+        sparse: (ep=4, dp_replicate=1, efsdp=1, pp=8, etp=1)
+        dense:  (dp_replicate=1, fsdp=4, pp=8, tp=1)
+      EP peers: {0,8,16,24}, {1,9,17,25}, ... → one rank per node, cross-node.
+      PP stages: ranks 0-7 / 8-15 / 16-23 / 24-31 → 8 stages intra-node.
+
+    Batch math:
+        global_batch = local_batch_size × dp_world = 32 × 4 = 128
+        num_microbatches = local_batch / micro_batch = 32 / 2 = 16
+        DualPipeV stages = PP × 2 = 16  →  16 ≥ 16 ✓
+    """
+    return Trainer.Config(
+        dump_folder="./e2e-benchmark/outputs/qwen3_30b_pp8_ep4",
+        hf_assets_path="./tests/assets/tokenizer",
+        model_spec=model_registry("30B-A3B"),
+        dataloader=HuggingFaceTextDataLoader.Config(dataset="c4"),
+        optimizer=OptimizersContainer.Config(
+            name="AdamW",
+            lr=1e-4,
+            implementation="foreach",
+        ),
+        lr_scheduler=LRSchedulersContainer.Config(warmup_steps=5),
+        training=TrainingConfig(
+            local_batch_size=32,
+            seq_len=512,
+            steps=10,
+            dtype="bfloat16",
+            mixed_precision_param="bfloat16",
+            mixed_precision_reduce="float32",
+            gc_freq=50,
+        ),
+        parallelism=ParallelismConfig(
+            pipeline_parallel_degree=8,
+            expert_parallel_degree=4,
+            pipeline_parallel_schedule="DualPipeV",
+            pipeline_parallel_microbatch_size=2,
+            pipeline_parallel_expert_parallel_overlap=False,
+            data_parallel_replicate_degree=1,
+            data_parallel_shard_degree=-1,
+            enable_ep_outer=True,
+        ),
+        activation_checkpoint=ActivationCheckpointConfig(mode="none"),
+        profiling=ProfilingConfig(
+            enable_profiling=True,
+            save_traces_folder="e2e-benchmark/profile_traces",
+            profile_freq=10,
+            profiler_warmup=3,
+            profiler_active=1,
+        ),
+        metrics=MetricsProcessor.Config(log_freq=1),
+        comm=CommConfig(
+            init_timeout_seconds=600,
+            train_timeout_seconds=600,
+        ),
+        checkpoint=CheckpointManager.Config(enable=False),
+    )
+
+
+def qwen3_9b_pp8_ep4_dualpipe() -> Trainer.Config:
+    """DualPipeV PP=8 + EP=4 on Qwen3-MoE 9B-A3B. Same shape as the 30B variant.
+
+    9B has 8 experts, so EP=4 places 2 experts per rank.
+    """
+    cfg = qwen3_30b_pp8_ep4_dualpipe()
+    cfg.dump_folder = "./e2e-benchmark/outputs/qwen3_9b_pp8_ep4"
+    cfg.model_spec = model_registry("9B-A3B")
+    return cfg
+
+
+def qwen3_1b_pp8_ep4_dualpipe() -> Trainer.Config:
+    """DualPipeV PP=8 + EP=4 on Qwen3-MoE 1B-A0.7B. Same shape as the 30B variant.
+
+    1B has 4 experts and only 16 layers — one layer per virtual PP stage (PP*2=16).
+    """
+    cfg = qwen3_30b_pp8_ep4_dualpipe()
+    cfg.dump_folder = "./e2e-benchmark/outputs/qwen3_1b_pp8_ep4"
+    cfg.model_spec = model_registry("1B-A0.7B")
+    return cfg
+
 
 def sft_qwen3_8b_math() -> Trainer.Config:
     """Qwen3-8B SFT on GSM8K math dataset."""
