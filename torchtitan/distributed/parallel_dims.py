@@ -25,6 +25,7 @@ class ParallelDims:
     ep: int
     etp: int
     world_size: int
+    enable_ep_outer: bool = False
 
     _meshes: dict[str, DeviceMesh] = field(default_factory=dict)
     _world_mesh: DeviceMesh | None = None
@@ -141,21 +142,36 @@ class ParallelDims:
         self._world_mesh = init_device_mesh(
             device_type, (self.world_size,), mesh_dim_names=("world",)
         )
-        dataloading_mesh = unflatten_mesh(
-            self._world_mesh,
-            ("batch", "pp", "cp", "tp"),
-            (batch, self.pp, self.cp, self.tp),
-        )
+        if self.enable_ep_outer:
+            # EP as outermost → EP peers cross-node; PP stages stay intra-node.
+            # dataloading_mesh swaps pp/cp so batch and cp stay adjacent for the
+            # loss_mesh flatten below.
+            dataloading_mesh = unflatten_mesh(
+                self._world_mesh,
+                ("batch", "cp", "pp", "tp"),
+                (batch, self.cp, self.pp, self.tp),
+            )
+            sparse_mesh = unflatten_mesh(
+                self._world_mesh,
+                ("ep", "dp_replicate", "efsdp", "pp", "etp"),
+                (self.ep, self.dp_replicate, efsdp, self.pp, self.etp),
+            )
+        else:
+            dataloading_mesh = unflatten_mesh(
+                self._world_mesh,
+                ("batch", "pp", "cp", "tp"),
+                (batch, self.pp, self.cp, self.tp),
+            )
+            sparse_mesh = unflatten_mesh(
+                self._world_mesh,
+                ("dp_replicate", "efsdp", "ep", "pp", "etp"),
+                (self.dp_replicate, efsdp, self.ep, self.pp, self.etp),
+            )
         loss_mesh = dataloading_mesh["batch", "cp"]._flatten("loss_mesh")
         dense_mesh = unflatten_mesh(
             self._world_mesh,
             ("dp_replicate", "fsdp", "pp", "tp"),
             (self.dp_replicate, fsdp, self.pp, self.tp),
-        )
-        sparse_mesh = unflatten_mesh(
-            self._world_mesh,
-            ("dp_replicate", "efsdp", "ep", "pp", "etp"),
-            (self.dp_replicate, efsdp, self.ep, self.pp, self.etp),
         )
 
         self._global_meshes = {
