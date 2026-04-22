@@ -241,7 +241,7 @@ def build_training_args(
             }[zero_level],
         ])
     if zero_level in ("zero2", "zero3"):
-        args.append("--use-megatron-fsdp")
+        args.extend(["--use-megatron-fsdp", "--ckpt-format", "fsdp_dtensor"])
     if schedule == "interleaved1f1b":
         args.extend(["--num-layers-per-virtual-pipeline-stage", "1"])
     if sp:

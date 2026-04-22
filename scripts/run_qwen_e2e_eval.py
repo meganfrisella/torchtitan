@@ -170,7 +170,8 @@ def build_experiments(
         "config": "qwen3_1b",
         "pp": 8,
         "dp": 2,
-        "ep": 1,
+        "ep": 2,
+        "zero_level": "zero2",
         "schedule": "1f1b",
     }
     zero_levels_by_system = {
@@ -183,9 +184,9 @@ def build_experiments(
     schedule_defaults = {
         "config": "qwen3_9b",
         "pp": 8,
-        "dp": 2,
-        "ep": 1,
-        "zero_level": "zero1",
+        "dp": 4,
+        "ep": 4,
+        "zero_level": "zero2",
         "mb_size": 4,
     }
     local_defaults = {
@@ -253,6 +254,7 @@ def build_experiments(
 
         if "schedule" in enabled_sweeps:
             defaults = schedule_defaults
+            schedule_zero_level = "zero1" if system == "megatron" else str(defaults["zero_level"])
             for schedule in schedule_sweep:
                 if schedule not in supported_schedules_by_system[system]:
                     continue
@@ -264,7 +266,7 @@ def build_experiments(
                         pp=int(defaults["pp"]),
                         dp=int(defaults["dp"]),
                         ep=int(defaults["ep"]),
-                        zero_level=str(defaults["zero_level"]),
+                        zero_level=schedule_zero_level,
                         schedule=schedule,
                         mb_size=int(defaults["mb_size"]),
                         seq_len=seq_len,
@@ -385,23 +387,26 @@ def make_command(
             command.extend(["--parallelism.fsdp_reshard_after_forward", "never"])
         elif exp.zero_level == "zero3":
             command.extend(["--parallelism.fsdp_reshard_after_forward", "always"])
+        if exp.ep > 1:
+            command.append("--parallelism.enable_ep_outer")
         if exp.sweep == "schedule":
             command.append("--compile.no-enable")
     elif exp.system == "megatron":
         command.extend(["--nnode", str(node_count(exp)), "--ngpu", str(exp.pp)])
         if enable_nsight:
             command.append("--nsight")
+        dp_megatron = exp.dp // exp.ep if exp.ep > 1 else exp.dp
         command.extend(
             [
                 "--model",
                 exp.config,
-                "--",
                 "--pp",
                 str(exp.pp),
                 "--dp",
-                str(exp.dp),
+                str(dp_megatron),
                 "--ep",
                 str(exp.ep),
+                "--",
                 "--micro-bs",
                 str(exp.mb_size),
                 "--global-bs",
