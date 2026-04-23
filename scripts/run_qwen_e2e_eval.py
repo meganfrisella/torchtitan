@@ -24,6 +24,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.ticker import FuncFormatter
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 TT_ITER_RE = re.compile(r"Final \d+ iter times.*?avg:\s*([\d.]+)\s*s,\s*std:\s*([\d.]+)\s*s")
@@ -182,9 +184,9 @@ def build_experiments(
     zero_sweep_values = (16, 24, 32, 34, 36, 38, 40)
     schedule_defaults = {
         "config": "qwen3_9b",
-        "pp": 8,
-        "dp": 2,
-        "ep": 1,
+        "pp": 4,
+        "dp": 4,
+        "ep": 4,
         "zero_level": "zero1",
         "mb_size": 4,
     }
@@ -346,6 +348,12 @@ def make_command(
         command.extend(["--nnode", str(node_count(exp)), "--ngpu", str(exp.pp)])
         if enable_nsight:
             command.append("--nsight")
+        if exp.ep > 1:
+            dp_replicate_degree = 1
+            dp_shard_degree = exp.ep
+        else:
+            dp_replicate_degree = exp.dp if exp.zero_level == "zero1" else 1
+            dp_shard_degree = 1 if exp.zero_level == "zero1" else exp.dp
         tt_args = [
             "--parallelism.pipeline_parallel_degree",
             str(exp.pp),
@@ -356,9 +364,9 @@ def make_command(
             "--parallelism.pipeline_parallel_microbatch_size",
             str(exp.mb_size),
             "--parallelism.data_parallel_replicate_degree",
-            str(exp.dp if exp.zero_level == "zero1" else 1),
+            str(dp_replicate_degree),
             "--parallelism.data_parallel_shard_degree",
-            str(1 if exp.zero_level == "zero1" else exp.dp),
+            str(dp_shard_degree),
             "--training.seq_len",
             str(exp.seq_len),
             "--training.local_batch_size",
@@ -385,23 +393,26 @@ def make_command(
             command.extend(["--parallelism.fsdp_reshard_after_forward", "never"])
         elif exp.zero_level == "zero3":
             command.extend(["--parallelism.fsdp_reshard_after_forward", "always"])
-        if exp.sweep == "schedule":
+        if exp.ep > 1:
+            command.append("--parallelism.enable_ep_outer")
+        if exp.sweep == "dualpipe":
             command.append("--compile.no-enable")
     elif exp.system == "megatron":
         command.extend(["--nnode", str(node_count(exp)), "--ngpu", str(exp.pp)])
         if enable_nsight:
-            command.append("--nsight")
+            command.extend(["--nsight", "--tensorboard-dir", megatron_profiler_dir(exp)])
+        dp_megatron = exp.dp // exp.ep if exp.ep > 1 else exp.dp
         command.extend(
             [
                 "--model",
                 exp.config,
-                "--",
                 "--pp",
                 str(exp.pp),
                 "--dp",
-                str(exp.dp),
+                str(dp_megatron),
                 "--ep",
                 str(exp.ep),
+                "--",
                 "--micro-bs",
                 str(exp.mb_size),
                 "--global-bs",
@@ -510,6 +521,12 @@ def inner_command(
 
     if exp.system == "torchtitan":
         train_script = "./run_train_nsys.sh" if enable_nsight else "./run_train.sh"
+        if exp.ep > 1:
+            dp_replicate_degree = 1
+            dp_shard_degree = exp.ep
+        else:
+            dp_replicate_degree = exp.dp if exp.zero_level == "zero1" else 1
+            dp_shard_degree = 1 if exp.zero_level == "zero1" else exp.dp
         args = [
             "--parallelism.pipeline_parallel_degree",
             str(exp.pp),
@@ -520,9 +537,9 @@ def inner_command(
             "--parallelism.pipeline_parallel_microbatch_size",
             str(exp.mb_size),
             "--parallelism.data_parallel_replicate_degree",
-            str(exp.dp if exp.zero_level == "zero1" else 1),
+            str(dp_replicate_degree),
             "--parallelism.data_parallel_shard_degree",
-            str(1 if exp.zero_level == "zero1" else exp.dp),
+            str(dp_shard_degree),
             "--training.seq_len",
             str(exp.seq_len),
             "--training.local_batch_size",
@@ -537,7 +554,9 @@ def inner_command(
             args.extend(["--parallelism.fsdp_reshard_after_forward", "never"])
         elif exp.zero_level == "zero3":
             args.extend(["--parallelism.fsdp_reshard_after_forward", "always"])
-        if exp.sweep == "schedule":
+        if exp.ep > 1:
+            command.append("--parallelism.enable_ep_outer")
+        if exp.sweep == "dualpipe":
             args.append("--compile.no-enable")
         env_prefix = [
             f"PYTHONPATH={DEFAULT_TORCHTITAN_PYTHONPATH}",
@@ -553,6 +572,7 @@ def inner_command(
         return shlex.join(env_prefix + [train_script] + args)
 
     if exp.system == "megatron":
+        dp_megatron = exp.dp // exp.ep if exp.ep > 1 else exp.dp
         args = [
             "conda",
             "run",
@@ -574,7 +594,7 @@ def inner_command(
             "--pp",
             str(exp.pp),
             "--dp",
-            str(exp.dp),
+            str(dp_megatron),
             "--ep",
             str(exp.ep),
             "--micro-bs",
@@ -590,6 +610,8 @@ def inner_command(
             "--train-iters",
             "8",
         ]
+        if enable_nsight:
+            args.extend(["--nsight", "--tensorboard-dir", megatron_profiler_dir(exp)])
         return shlex.join(args)
 
     if exp.system == "deepspeed":
@@ -821,25 +843,157 @@ def parse_peak_memory_values(peak_memory_gb_by_rank: str) -> list[float]:
     return values
 
 
+def row_tps(row: Result) -> float | None:
+    if row.global_batch_size is None or row.seq_len is None:
+        return None
+    if row.iter_time_mean is None or row.iter_time_mean <= 0:
+        return None
+    return (float(row.global_batch_size) * float(row.seq_len)) / float(row.iter_time_mean)
+
+
+def row_tps_stddev(row: Result) -> float:
+    if row.global_batch_size is None or row.seq_len is None:
+        return 0.0
+    if row.iter_time_mean is None or row.iter_time_mean <= 0:
+        return 0.0
+    if row.iter_time_stddev is None:
+        return 0.0
+    tokens_per_iter = float(row.global_batch_size) * float(row.seq_len)
+    return tokens_per_iter * float(row.iter_time_stddev) / (float(row.iter_time_mean) ** 2)
+
+
+def save_scalability_tps_plot(title: str, xlabel: str, rows: list[Result], output_path: Path, *, allow_oom_markers: bool = False) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    ok_rows = [row for row in rows if row.status == "ok" and row.iter_time_mean is not None and row.iter_time_mean > 0]
+    if not ok_rows:
+        return
+
+    dp_values = sorted({row.dp for row in rows})
+    pp_values = sorted({row.pp for row in rows})
+    row_map = {(row.pp, row.dp): row for row in rows}
+
+    x_centers = list(range(len(pp_values)))
+    width = 0.8 / max(len(dp_values), 1)
+    tps_values = [row_tps(row) for row in ok_rows]
+    success_max = max((value for value in tps_values if value is not None), default=0.0)
+    marker_y = success_max * 0.05 if success_max > 0 else 1.0
+
+    fig, ax = plt.subplots(figsize=(max(10, len(pp_values) * 1.6), 4.2))
+    bar_x_by_pp_dp: dict[tuple[int, int], float] = {}
+    bar_tps_by_pp_dp: dict[tuple[int, int], float] = {}
+    for dp_index, dp in enumerate(dp_values):
+        offset = (dp_index - (len(dp_values) - 1) / 2) * width
+        for group_index, pp in enumerate(pp_values):
+            row = row_map.get((pp, dp))
+            if row is None:
+                continue
+            x = x_centers[group_index] + offset
+            tps = row_tps(row)
+            if row.status == "ok" and tps is not None:
+                ax.bar(
+                    x,
+                    tps,
+                    width=width * 0.9,
+                    yerr=row_tps_stddev(row),
+                    color="#4C72B0",
+                    edgecolor="#4C72B0",
+                    linewidth=1.2,
+                    ecolor="#2F2F2F",
+                    capsize=4,
+                )
+                bar_x_by_pp_dp[(pp, dp)] = x
+                bar_tps_by_pp_dp[(pp, dp)] = tps
+                ax.text(
+                    x,
+                    tps * 0.95,
+                    f"DP={dp}",
+                    ha="center",
+                    va="top",
+                    fontsize=14,
+                    color="white",
+                    fontweight="bold",
+                    clip_on=True,
+                )
+            elif allow_oom_markers and row.status == "oom":
+                ax.scatter(x, marker_y, marker="x", s=120, color="red", linewidths=2.5)
+            else:
+                ax.scatter(x, marker_y, marker="x", s=100, color="black", linewidths=2.0)
+
+    # One exponential reference curve per PP group:
+    # Anchor at that group's dp=1 bar with TPS=T and pass through
+    # 2T at dp=2 bar center and 4T at dp=4 bar center.
+    for pp in pp_values:
+        if (pp, 1) not in bar_x_by_pp_dp or (pp, 1) not in bar_tps_by_pp_dp:
+            continue
+        base_x = bar_x_by_pp_dp[(pp, 1)]
+        base_t = bar_tps_by_pp_dp[(pp, 1)]
+
+        candidate_dps = sorted([dp for dp in dp_values if (pp, dp) in bar_x_by_pp_dp and dp >= 1])
+        if len(candidate_dps) < 2:
+            continue
+
+        end_dp = candidate_dps[-1]
+        end_x = bar_x_by_pp_dp[(pp, end_dp)]
+        if end_x == base_x:
+            continue
+        # y = T * exp(alpha * (x - x0)); choose alpha so y(end_x)=T*(end_dp/1)
+        alpha = math.log(float(end_dp)) / (end_x - base_x)
+        xs = [base_x + (end_x - base_x) * i / 80.0 for i in range(81)]
+        ys = [base_t * math.exp(alpha * (x - base_x)) for x in xs]
+        ax.plot(xs, ys, linestyle="-", linewidth=2.6, color="#222222", alpha=0.9, label=f"pp={pp} exponential scaling")
+
+    def _sci_fmt(y: float, _pos: int) -> str:
+        if y == 0:
+            return "0"
+        exponent = int(math.floor(math.log10(abs(y))))
+        mantissa = y / (10**exponent)
+        mantissa_text = f"{mantissa:.0f}" if abs(mantissa - round(mantissa)) < 1e-9 else f"{mantissa:.1f}".rstrip("0").rstrip(".")
+        return f"{mantissa_text}e{exponent}"
+
+    ax.set_title("Piper PP x DP Scalability", fontsize=26)
+    ax.set_xlabel("")
+    ax.set_ylabel("Tokens/s", fontsize=20)
+    ax.set_xticks(x_centers)
+    ax.set_xticklabels([f"PP={pp}" for pp in pp_values], fontsize=18)
+    ax.tick_params(axis="y", labelsize=18)
+    ax.yaxis.set_major_formatter(FuncFormatter(_sci_fmt))
+    ax.grid(axis="y", linestyle="--", alpha=0.35)
+    ax.set_ylim(bottom=0)
+    ax.legend(
+        handles=[Line2D([0], [0], color="#222222", linewidth=2.6, linestyle="-", label="Theoretical")],
+        labels=["Theoretical"],
+        loc="upper left",
+        fontsize=16,
+    )
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
+
 def save_bar_plot(title: str, xlabel: str, rows: list[Result], output_path: Path, *, allow_oom_markers: bool = False) -> None:
+    if rows and all(row.sweep == "scalability" for row in rows):
+        save_scalability_tps_plot(title, xlabel, rows, output_path, allow_oom_markers=allow_oom_markers)
+        return
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     labels = [experiment_label_from_result(row) for row in rows]
     xs = list(range(len(rows)))
-    success_rows = [row for row in rows if row.status == "ok" and row.iter_time_mean is not None]
-    success_max = max((float(row.iter_time_mean) for row in success_rows), default=0.0)
+    success_rows = [row for row in rows if row.status == "ok" and row_tps(row) is not None]
+    success_max = max((float(row_tps(row) or 0.0) for row in success_rows), default=0.0)
     marker_y = success_max * 0.05 if success_max > 0 else 1.0
 
     fig, ax = plt.subplots(figsize=(max(10, len(rows) * 0.8), 6))
     for index, row in enumerate(rows):
-        if row.status == "ok" and row.iter_time_mean is not None:
-            ax.bar(index, float(row.iter_time_mean), yerr=float(row.iter_time_stddev or 0.0), color="#4C72B0", ecolor="#2F2F2F", capsize=4)
+        tps = row_tps(row)
+        if row.status == "ok" and tps is not None:
+            ax.bar(index, tps, yerr=row_tps_stddev(row), color="#4C72B0", ecolor="#2F2F2F", capsize=4)
         elif allow_oom_markers and row.status == "oom":
             ax.scatter(index, marker_y, marker="x", s=120, color="red", linewidths=2.5)
         else:
             ax.scatter(index, marker_y, marker="x", s=100, color="black", linewidths=2.0)
     ax.set_title(title)
     ax.set_xlabel(xlabel)
-    ax.set_ylabel("Iteration Time (s)")
+    ax.set_ylabel("Tokens / second")
     ax.set_xticks(xs)
     ax.set_xticklabels(labels, rotation=45, ha="right")
     ax.grid(axis="y", linestyle="--", alpha=0.35)
@@ -929,8 +1083,8 @@ def save_combined_bar_plot(title: str, xlabel: str, rows: list[Result], output_p
     row_map = {(row.system, experiment_label_from_result(row)): row for row in rows}
     x_positions = list(range(len(labels)))
     width = 0.8 / max(len(systems), 1)
-    success_rows = [row for row in rows if row.status == "ok" and row.iter_time_mean is not None]
-    success_max = max((float(row.iter_time_mean) for row in success_rows), default=0.0)
+    success_rows = [row for row in rows if row.status == "ok" and row_tps(row) is not None]
+    success_max = max((float(row_tps(row) or 0.0) for row in success_rows), default=0.0)
     marker_y = success_max * 0.05 if success_max > 0 else 1.0
 
     fig, ax = plt.subplots(figsize=(max(10, len(labels) * 1.6), 6))
@@ -943,12 +1097,13 @@ def save_combined_bar_plot(title: str, xlabel: str, rows: list[Result], output_p
             x = x_positions[label_index] + offset
             color = SYSTEM_COLORS.get(system, "#4C72B0")
             legend_label = system if label_index == 0 else None
-            if row.status == "ok" and row.iter_time_mean is not None:
+            tps = row_tps(row)
+            if row.status == "ok" and tps is not None:
                 ax.bar(
                     x,
-                    float(row.iter_time_mean),
+                    tps,
                     width=width * 0.9,
-                    yerr=float(row.iter_time_stddev or 0.0),
+                    yerr=row_tps_stddev(row),
                     color=color,
                     ecolor="#2F2F2F",
                     capsize=4,
@@ -960,7 +1115,7 @@ def save_combined_bar_plot(title: str, xlabel: str, rows: list[Result], output_p
                 ax.scatter(x, marker_y, marker="x", s=100, color=color, linewidths=2.0, label=legend_label)
     ax.set_title(title)
     ax.set_xlabel(xlabel)
-    ax.set_ylabel("Iteration Time (s)")
+    ax.set_ylabel("Tokens / second")
     ax.set_xticks(x_positions)
     ax.set_xticklabels(labels, rotation=45, ha="right")
     ax.grid(axis="y", linestyle="--", alpha=0.35)
@@ -1128,6 +1283,17 @@ def piper_experiment_name(exp: Experiment, nsight: bool) -> str:
     )
 
 
+def megatron_profiler_run_name(exp: Experiment) -> str:
+    return (
+        f"{exp.config}-sched_{exp.schedule}-pp{exp.pp}-dp{exp.dp}-ep{exp.ep}-"
+        f"{exp.zero_level}-mb{exp.mb_size}-sl{exp.seq_len}"
+    )
+
+
+def megatron_profiler_dir(exp: Experiment) -> str:
+    return f"/tmp/megatron_profiler/{megatron_profiler_run_name(exp)}"
+
+
 def _ssh_head_command(remote_command: str) -> list[str]:
     ssh_key = os.environ["SSH_KEY"]
     head_public_ip = os.environ["HEAD_PUBLIC_IP"]
@@ -1180,6 +1346,11 @@ def _terminate_active_child() -> None:
 
 def _cleanup_remote_launchers() -> None:
     _terminate_active_child()
+
+
+def _cleanup_between_experiments() -> None:
+    kill_script = Path(__file__).resolve().parent / "kill-nodes.sh"
+    subprocess.run(["bash", str(kill_script)], check=False, capture_output=True, text=True)
 
 
 def _handle_exit_signal(signum: int, _frame) -> None:
@@ -1597,23 +1768,24 @@ def _fetch_remote_dag_order_logs(exp: Experiment, remote_output_dir: str, exp_lo
 
 
 def _fetch_megatron_nsight_traces(exp: Experiment, log_path: Path) -> None:
-    nsight_dir = log_path.parent / (log_path.stem + "_nsight")
-    nsight_dir.mkdir(parents=True, exist_ok=True)
+    profiles_dir = log_path.parent / (log_path.stem + "_profiler")
+    profiles_dir.mkdir(parents=True, exist_ok=True)
     n_nodes = node_count(exp)
-    stage_path = f"/tmp/megatron_nsight_staged_{int(time.time())}"
+    stage_path = f"/tmp/megatron_profiler_staged_{int(time.time())}"
+    remote_profiler_dir = megatron_profiler_dir(exp)
     nodes: list[tuple[str, str | None]] = [("head", None)]
     for i in range(1, n_nodes):
         worker_ip = os.environ.get(f"WORKER{i}_PRIVATE_IP")
         if worker_ip:
             nodes.append((f"worker{i}", worker_ip))
     for node_label, worker_ip in nodes:
-        docker_cp_cmd = f"docker cp torchtitan:/tmp/megatron_nsight {stage_path}"
+        docker_cp_cmd = f"docker cp torchtitan:{remote_profiler_dir} {stage_path}"
         ssh_cmd = _ssh_head_command(docker_cp_cmd) if worker_ip is None else _ssh_worker_command(worker_ip, docker_cp_cmd)
         result = subprocess.run(ssh_cmd, check=False, capture_output=True, text=True)
         if result.returncode != 0:
-            print(f"  [nsight] no traces on {node_label} (docker cp failed)", file=sys.stderr)
+            print(f"  [nsight] no profiler output on {node_label} (docker cp failed)", file=sys.stderr)
             continue
-        local_node_dir = nsight_dir / node_label
+        local_node_dir = profiles_dir / node_label
         local_node_dir.mkdir(parents=True, exist_ok=True)
         ok = _scp_from_remote(
             node_kind="head" if worker_ip is None else "worker",
@@ -1622,9 +1794,9 @@ def _fetch_megatron_nsight_traces(exp: Experiment, log_path: Path) -> None:
             destination=local_node_dir,
         )
         if ok:
-            print(f"  [nsight] fetched traces from {node_label} → {local_node_dir}")
+            print(f"  [nsight] fetched profiler output from {node_label} → {local_node_dir}")
         else:
-            print(f"  [nsight] scp failed for {node_label}", file=sys.stderr)
+            print(f"  [nsight] failed to fetch profiler output for {node_label}", file=sys.stderr)
         cleanup_cmd = f"rm -rf {stage_path}"
         cleanup_ssh = _ssh_head_command(cleanup_cmd) if worker_ip is None else _ssh_worker_command(worker_ip, cleanup_cmd)
         subprocess.run(cleanup_ssh, check=False, capture_output=True)
@@ -1778,56 +1950,59 @@ def main() -> int:
                         piper_remote_output_dir=args.piper_remote_output_dir,
                     )
                 )
-                env = dict(os.environ)
-                env.setdefault("TORCHTITAN_PYTHONPATH", DEFAULT_TORCHTITAN_PYTHONPATH)
-                with log_path.open("w", encoding="utf-8") as log_file:
-                    global _ACTIVE_CHILD
-                    _ACTIVE_CHILD = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT, text=True, env=env)
-                    returncode = _ACTIVE_CHILD.wait()
-                    _ACTIVE_CHILD = None
-                if args.nsight and system == "megatron":
-                    _fetch_megatron_nsight_traces(exp, log_path)
-                iter_mean, iter_std, peak_str, is_oom, reason, metrics_path = parse_log(
-                    system,
-                    log_path,
-                    exp=exp,
-                    args=args,
-                    system_out=system_out,
-                    returncode=returncode,
-                )
-                if returncode == 0 and (iter_mean is not None or system == "megatron"):
-                    status = "ok"
-                elif is_oom:
-                    status = "oom"
-                    reason = reason or "oom"
-                else:
-                    status = "failed"
-                    reason = reason or f"exit_code={returncode}"
-                run_result = Result(
-                    system=system,
-                    sweep=exp.sweep,
-                    config=exp.config,
-                    pp=exp.pp,
-                    dp=exp.dp,
-                    ep=exp.ep,
-                    zero_level=exp.zero_level,
-                    schedule=exp.schedule,
-                    mb_size=exp.mb_size,
-                    seq_len=exp.seq_len,
-                    local_batch_size=local_batch_size(exp),
-                    global_batch_size=global_batch_size(exp),
-                    nnode=node_count(exp),
-                    ngpu=exp.pp,
-                    log_path=str(log_path),
-                    metrics_path=metrics_path,
-                    returncode=returncode,
-                    status=status,
-                    iter_time_mean=iter_mean,
-                    iter_time_stddev=iter_std,
-                    peak_memory_gb_by_rank=peak_str,
-                    failure_reason=reason,
-                )
-                results.append(run_result)
+                try:
+                    env = dict(os.environ)
+                    env.setdefault("TORCHTITAN_PYTHONPATH", DEFAULT_TORCHTITAN_PYTHONPATH)
+                    with log_path.open("w", encoding="utf-8") as log_file:
+                        global _ACTIVE_CHILD
+                        _ACTIVE_CHILD = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT, text=True, env=env)
+                        returncode = _ACTIVE_CHILD.wait()
+                        _ACTIVE_CHILD = None
+                    if args.nsight and system == "megatron":
+                        _fetch_megatron_nsight_traces(exp, log_path)
+                    iter_mean, iter_std, peak_str, is_oom, reason, metrics_path = parse_log(
+                        system,
+                        log_path,
+                        exp=exp,
+                        args=args,
+                        system_out=system_out,
+                        returncode=returncode,
+                    )
+                    if returncode == 0 and (iter_mean is not None or system == "megatron"):
+                        status = "ok"
+                    elif is_oom:
+                        status = "oom"
+                        reason = reason or "oom"
+                    else:
+                        status = "failed"
+                        reason = reason or f"exit_code={returncode}"
+                    run_result = Result(
+                        system=system,
+                        sweep=exp.sweep,
+                        config=exp.config,
+                        pp=exp.pp,
+                        dp=exp.dp,
+                        ep=exp.ep,
+                        zero_level=exp.zero_level,
+                        schedule=exp.schedule,
+                        mb_size=exp.mb_size,
+                        seq_len=exp.seq_len,
+                        local_batch_size=local_batch_size(exp),
+                        global_batch_size=global_batch_size(exp),
+                        nnode=node_count(exp),
+                        ngpu=exp.pp,
+                        log_path=str(log_path),
+                        metrics_path=metrics_path,
+                        returncode=returncode,
+                        status=status,
+                        iter_time_mean=iter_mean,
+                        iter_time_stddev=iter_std,
+                        peak_memory_gb_by_rank=peak_str,
+                        failure_reason=reason,
+                    )
+                    results.append(run_result)
+                finally:
+                    _cleanup_between_experiments()
 
             write_csv(system_out / "all_results.csv", results)
             for sweep in ("scalability", "zero", "schedule", "local"):

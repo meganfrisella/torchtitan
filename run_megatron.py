@@ -65,7 +65,6 @@ MODEL_CONFIGS = {
     },
 }
 
-
 def _setup_distributed(nnodes: int, master_addr: str, background_mode: bool):
     env_node_rank = os.environ.get("NODE_RANK") or os.environ.get("GROUP_RANK") or "0"
 
@@ -135,6 +134,8 @@ def parse_args():
                         help="Master node port.")
     parser.add_argument("--disable-background-mode", action="store_true", default=False,
                         help="Disable hostfile-based rank discovery; requires --master-addr.")
+    parser.add_argument("--nsight", action="store_true", default=False,
+                        help="Enable Megatron/PyTorch profiler output under --tensorboard-dir.")
     args = parser.parse_args()
     if "--seq-length" not in os.sys.argv:
         args.seq_length = MODEL_CONFIGS[args.model]["seq_length"]
@@ -157,6 +158,7 @@ def build_training_args(
     train_iters: int,
     schedule: str,
     zero_level: str,
+    enable_profiler: bool,
 ) -> list:
     if sp and tp == 1:
         raise ValueError("--sp requires --tp > 1")
@@ -221,13 +223,16 @@ def build_training_args(
         "--eval-iters", "0",
         "--save-interval", "100000",
         "--tensorboard-dir", tensorboard_dir,
-        # "--profile",
-        # "--use-pytorch-profiler",
-        # "--profile-step-start", "5",
-        # "--profile-step-end", "8",
-        # "--pytorch-profiler-collect-shapes",
         "--no-gradient-accumulation-fusion",
     ]
+    if enable_profiler:
+        args.extend([
+            "--profile",
+            "--use-pytorch-profiler",
+            "--profile-step-start", "5",
+            "--profile-step-end", "8",
+            "--pytorch-profiler-collect-shapes",
+        ])
     if dp > 1:
         args.extend([
             "--use-distributed-optimizer",
@@ -273,19 +278,23 @@ def main():
         args.tensorboard_dir, args.micro_bs, args.global_bs, args.seq_length,
         args.tp, args.pp, args.dp, args.cp, args.ep, args.sp,
         args.use_tp_pp_dp_mapping, args.model, args.train_iters, args.schedule, args.zero_level,
+        args.nsight,
     )
 
     from torch.distributed.run import main as torchrun_main
 
     # Use torchrun's static rendezvous path for multi-node runs so every node
     # consistently connects to the fixed master_addr/master_port pair.
-    torchrun_main([
+    torchrun_args = [
         f"--nproc_per_node={args.nproc_per_node}",
         f"--nnodes={args.nnodes}",
         f"--node_rank={node_rank}",
         "--rdzv_backend=static", # TODO:
         f"--master_addr={master_addr}",
         f"--master_port={args.master_port}",
+    ]
+    torchrun_main([
+        *torchrun_args,
         "pretrain_gpt.py",
         *training_args,
     ])

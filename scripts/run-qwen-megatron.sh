@@ -5,6 +5,11 @@ NNODE="${NNODE:-2}"
 NGPU="${NGPU:-8}"
 MODEL="${MODEL:-qwen3_1b}"
 MASTER_PORT="${MASTER_PORT:-29500}"
+TP="${TP:-1}"
+PP="${PP:-1}"
+DP="${DP:-1}"
+CP="${CP:-1}"
+EP="${EP:-1}"
 LOG_TO_FILE=false
 OUT_DIR="/m-coriander/coriander/mfris/piper-eval"
 NSIGHT=false
@@ -16,6 +21,11 @@ while [[ $# -gt 0 ]]; do
         --ngpu) NGPU="$2"; shift 2 ;;
         --model) MODEL="$2"; shift 2 ;;
         --master-port) MASTER_PORT="$2"; shift 2 ;;
+        --tp) TP="$2"; shift 2 ;;
+        --pp) PP="$2"; shift 2 ;;
+        --dp) DP="$2"; shift 2 ;;
+        --cp) CP="$2"; shift 2 ;;
+        --ep) EP="$2"; shift 2 ;;
         --log-to-file) LOG_TO_FILE=true; shift ;;
         --out-dir) OUT_DIR="$2"; shift 2 ;;
         --nsight) NSIGHT=true; shift ;;
@@ -23,6 +33,14 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+
+WORLD_SIZE=$((NNODE * NGPU))
+PRODUCT=$((TP * PP * DP * CP * EP))
+if (( PRODUCT != WORLD_SIZE )); then
+    echo "Error: tp*pp*dp*cp*ep ($PRODUCT) != nnode*ngpu ($WORLD_SIZE)" >&2
+    echo "  tp=$TP pp=$PP dp=$DP cp=$CP ep=$EP nnode=$NNODE ngpu=$NGPU" >&2
+    exit 1
+fi
 
 NSIGHT_FLAG=""
 if $NSIGHT; then
@@ -58,8 +76,18 @@ if ((${#TRAIN_ARGS[@]})); then
     TRAIN_ARGS_QUOTED=$(printf '%q ' "${TRAIN_ARGS[@]}")
 fi
 
-LOWEST_LEVEL_CMD="conda run -n megatron python $TORCHTITAN_WORKSPACE/run_megatron.py --model $MODEL --nnodes $NNODE --nproc-per-node $NGPU --master-addr $HEAD_PRIVATE_IP --master-port $MASTER_PORT --disable-background-mode $NSIGHT_FLAG ${TRAIN_ARGS_QUOTED}"
+PARALLEL_ARGS="--tp $TP --pp $PP --dp $DP --cp $CP --ep $EP"
+
+LOWEST_LEVEL_CMD="NCCL_P2P_DISABLE=1 conda run -n megatron python $TORCHTITAN_WORKSPACE/run_megatron.py --model $MODEL --nnodes $NNODE --nproc-per-node $NGPU --master-addr $HEAD_PRIVATE_IP --master-port $MASTER_PORT --disable-background-mode $PARALLEL_ARGS $NSIGHT_FLAG ${TRAIN_ARGS_QUOTED}"
 echo "Lowest-level command: $LOWEST_LEVEL_CMD"
+
+EXTRA_CUDA_ENVS=()
+if [[ "$PP" == "4" ]]; then
+    EXTRA_CUDA_ENVS+=(
+        "-e" "CUDA_VISIBLE_DEVICES=0,1,2,3"
+        "-e" "CUDA_DEVICE_MAX_CONNECTIONS=1"
+    )
+fi
 
 $SSH ubuntu@$HEAD_PUBLIC_IP "docker exec torchtitan mkdir -p /m-coriander/coriander/mfris/piper-eval"
 for WORKER_IP in $WORKERS; do
@@ -70,6 +98,8 @@ $SSH ubuntu@$HEAD_PUBLIC_IP \
   "docker exec -w $MEGATRON_WORKSPACE \
     -e NCCL_SOCKET_IFNAME=ens32 \
     -e GLOO_SOCKET_IFNAME=ens32 \
+    -e NCCL_P2P_DISABLE=1 \
+    ${EXTRA_CUDA_ENVS[*]} \
     torchtitan \
     bash -lc 'echo HEAD; pwd; \
       NODE_RANK=0 \
@@ -80,6 +110,7 @@ $SSH ubuntu@$HEAD_PUBLIC_IP \
         --master-addr $HEAD_PRIVATE_IP \
         --master-port $MASTER_PORT \
         --disable-background-mode \
+        $PARALLEL_ARGS \
         $NSIGHT_FLAG \
         $TRAIN_ARGS_QUOTED'" &
 
@@ -89,6 +120,8 @@ for WORKER_IP in $WORKERS; do
     "docker exec -w $MEGATRON_WORKSPACE \
       -e NCCL_SOCKET_IFNAME=ens32 \
       -e GLOO_SOCKET_IFNAME=ens32 \
+      -e NCCL_P2P_DISABLE=1 \
+      ${EXTRA_CUDA_ENVS[*]} \
       torchtitan \
       bash -lc 'echo WORKER; pwd; \
         NODE_RANK=$NODE_RANK \
@@ -99,6 +132,7 @@ for WORKER_IP in $WORKERS; do
           --master-addr $HEAD_PRIVATE_IP \
           --master-port $MASTER_PORT \
           --disable-background-mode \
+          $PARALLEL_ARGS \
           $NSIGHT_FLAG \
           $TRAIN_ARGS_QUOTED'" &
   NODE_RANK=$((NODE_RANK + 1))
