@@ -28,6 +28,12 @@ def _run_experts_for_loop(
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
 ) -> torch.Tensor:
+
+    # Avoid synchronization with the host (may race as implemented right now)
+    # num_tokens_per_expert_host = torch.empty(len(num_tokens_per_expert), dtype=torch.int64, device="cpu", pin_memory=True)
+    # num_tokens_per_expert_host.copy_(num_tokens_per_expert.to(torch.int64), non_blocking=True)
+    # num_tokens_per_expert_list = num_tokens_per_expert_host.tolist()
+
     # NOTE: this would incur a synchronization between device and host
     num_tokens_per_expert_list = num_tokens_per_expert.tolist()
 

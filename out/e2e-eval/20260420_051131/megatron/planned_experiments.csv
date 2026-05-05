@@ -1,0 +1,4 @@
+system,sweep,config,pp,dp,ep,zero_level,schedule,mb_size,seq_len,local_batch_size,global_batch_size,nnode,ngpu,command
+megatron,zero,qwen3_9b,8,2,1,zero1,1f1b,4,512,64,128,2,8,scripts/run-qwen-megatron.sh --nnode 2 --ngpu 8 --model qwen3_9b -- --pp 8 --dp 2 --ep 1 --micro-bs 4 --global-bs 128 --seq-length 512 --schedule 1f1b --zero-level zero1 --train-iters 8
+megatron,zero,qwen3_9b,8,2,1,zero1,1f1b,6,512,96,192,2,8,scripts/run-qwen-megatron.sh --nnode 2 --ngpu 8 --model qwen3_9b -- --pp 8 --dp 2 --ep 1 --micro-bs 6 --global-bs 192 --seq-length 512 --schedule 1f1b --zero-level zero1 --train-iters 8
+megatron,zero,qwen3_9b,8,2,1,zero1,1f1b,8,512,128,256,2,8,scripts/run-qwen-megatron.sh --nnode 2 --ngpu 8 --model qwen3_9b -- --pp 8 --dp 2 --ep 1 --micro-bs 8 --global-bs 256 --seq-length 512 --schedule 1f1b --zero-level zero1 --train-iters 8

@@ -1,0 +1,2 @@
+system,sweep,config,pp,dp,ep,zero_level,schedule,mb_size,seq_len,local_batch_size,global_batch_size,nnode,ngpu,command
+megatron,schedule,qwen3_9b,4,4,4,zero1,interleaved1f1b,4,512,32,128,4,4,scripts/run-qwen-megatron.sh --nnode 4 --ngpu 4 --model qwen3_9b --pp 4 --dp 1 --ep 4 -- --micro-bs 4 --global-bs 128 --seq-length 512 --schedule interleaved1f1b --zero-level zero1 --train-iters 8

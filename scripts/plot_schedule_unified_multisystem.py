@@ -13,11 +13,11 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from matplotlib.ticker import FuncFormatter
 
-TITLE_FONTSIZE = 28
-AXIS_LABEL_FONTSIZE = 24
-XTICK_FONTSIZE = 22
-YTICK_FONTSIZE = 16
-LEGEND_FONTSIZE = 20
+TITLE_FONTSIZE = 34
+AXIS_LABEL_FONTSIZE = 30
+XTICK_FONTSIZE = 26
+YTICK_FONTSIZE = 22
+LEGEND_FONTSIZE = 26
 
 SCHEDULE_ORDER = ["1f1b", "interleaved1f1b", "dualpipe"]
 SYSTEM_COLORS = {
@@ -28,7 +28,7 @@ SYSTEM_COLORS = {
 SYSTEM_DISPLAY_NAMES = {
     "megatron": "Megatron",
     "torchtitan": "TorchTitan",
-    "piper": "Piper",
+    "piper": "Flexo",
 }
 SYSTEM_COMPILE_DISPLAY_NAMES = {
     "megatron": "Megatron + Inductor",
@@ -58,6 +58,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--megatron-9b", required=True, help="Qwen3 9B Megatron schedule.csv path")
     parser.add_argument("--piper-no-compile-9b", required=True, help="Qwen3 9B Piper no-compile schedule.csv path")
     parser.add_argument("--piper-compile-9b", required=False, default=None, help="Qwen3 9B Piper compile schedule.csv path")
+    parser.add_argument(
+        "--no-compile",
+        action="store_true",
+        help="Disable compile overlay bars and compile legend entries.",
+    )
     parser.add_argument(
         "--output",
         default=None,
@@ -138,6 +143,7 @@ def _draw_subplot(
     ax: plt.Axes,
     *,
     title: str,
+    panel_label: str | None,
     systems: list[str],
     base_by_system: dict[str, dict[str, tuple[float, float]]],
     compile_by_system: dict[str, dict[str, tuple[float, float]]],
@@ -226,7 +232,17 @@ def _draw_subplot(
                 if system not in compile_handles:
                     compile_handles[system] = bars[0]
 
-    ax.set_title(title, fontsize=TITLE_FONTSIZE)
+    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=40)
+    if panel_label:
+        ax.text(
+            0.5,
+            1.05,
+            panel_label,
+            transform=ax.transAxes,
+            ha="center",
+            va="bottom",
+            fontsize=XTICK_FONTSIZE,
+        )
     ax.set_ylabel("Tokens / Second", fontsize=AXIS_LABEL_FONTSIZE)
     ax.set_xticks(x_positions)
     xticklabels: list[str] = []
@@ -267,22 +283,57 @@ def main() -> int:
         "torchtitan": _extract_schedule_tps(_read_rows(tt_nc_1b_path), "torchtitan"),
         "piper": _extract_schedule_tps(_read_rows(piper_nc_1b_path), "piper"),
     }
-    compile_by_system_1b = {
-        "torchtitan": _extract_schedule_tps(_read_rows(tt_c_1b_path), "torchtitan"),
-        "piper": _extract_schedule_tps(_read_rows(piper_c_1b_path), "piper"),
-    }
+    compile_by_system_1b = (
+        {}
+        if args.no_compile
+        else {
+            "torchtitan": _extract_schedule_tps(_read_rows(tt_c_1b_path), "torchtitan"),
+            "piper": _extract_schedule_tps(_read_rows(piper_c_1b_path), "piper"),
+        }
+    )
 
     base_by_system_9b = {
         "megatron": _extract_schedule_tps(_read_rows(megatron_9b_path), "megatron"),
         "piper": _extract_schedule_tps(_read_rows(piper_nc_9b_path), "piper"),
     }
-    compile_by_system_9b = {
-        "piper": _extract_schedule_tps(_read_rows(piper_c_9b_path), "piper") if piper_c_9b_path is not None else {},
-    }
+    compile_by_system_9b = (
+        {}
+        if args.no_compile
+        else {
+            "piper": _extract_schedule_tps(_read_rows(piper_c_9b_path), "piper") if piper_c_9b_path is not None else {},
+        }
+    )
 
     labels_1b = _plot_labels_for(["megatron", "torchtitan", "piper"], base_by_system_1b, compile_by_system_1b)
     labels_9b = _plot_labels_for(["megatron", "piper"], base_by_system_9b, compile_by_system_9b)
-    all_tags = list(string.ascii_lowercase)
+    all_tags = [
+        "i",
+        "ii",
+        "iii",
+        "iv",
+        "v",
+        "vi",
+        "vii",
+        "viii",
+        "ix",
+        "x",
+        "xi",
+        "xii",
+        "xiii",
+        "xiv",
+        "xv",
+        "xvi",
+        "xvii",
+        "xviii",
+        "xix",
+        "xx",
+        "xxi",
+        "xxii",
+        "xxiii",
+        "xxiv",
+        "xxv",
+        "xxvi",
+    ]
     labels_1b_tags = {label: all_tags[idx] for idx, label in enumerate(labels_1b)}
     labels_9b_tags = {label: all_tags[len(labels_1b) + idx] for idx, label in enumerate(labels_9b)}
 
@@ -290,6 +341,7 @@ def main() -> int:
     _draw_subplot(
         axes[0],
         title="Qwen3 1B",
+        panel_label="(a)",
         systems=["megatron", "torchtitan", "piper"],
         base_by_system=base_by_system_1b,
         compile_by_system=compile_by_system_1b,
@@ -298,6 +350,7 @@ def main() -> int:
     _draw_subplot(
         axes[1],
         title="Qwen3 9B",
+        panel_label="(b)",
         systems=["megatron", "piper"],
         base_by_system=base_by_system_9b,
         compile_by_system=compile_by_system_9b,
@@ -318,18 +371,20 @@ def main() -> int:
             )
             legend_labels.append(SYSTEM_COMPILE_DISPLAY_NAMES[system])
 
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.84, bottom=0.28)
+
     if legend_handles:
         fig.legend(
             legend_handles,
             legend_labels,
             loc="lower center",
-            bbox_to_anchor=(0.5, 0.01),
+            bbox_to_anchor=(0.5, 0.00),
             ncol=max(1, len(legend_labels)),
             fontsize=LEGEND_FONTSIZE,
             frameon=True,
         )
 
-    fig.tight_layout(rect=[0.0, 0.10, 1.0, 1.0])
     fig.savefig(output_path, dpi=220)
     plt.close(fig)
     print(output_path)

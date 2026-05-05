@@ -227,6 +227,46 @@ def qwen3_moe_debug() -> Trainer.Config:
     )
 
 
+def qwen3_1b_single() -> Trainer.Config:
+    return Trainer.Config(
+        hf_assets_path="./assets/hf/Qwen3-0.6B",
+        model_spec=model_registry("1B-A0.7B"),
+        dataloader=HuggingFaceTextDataLoader.Config(
+            dataset="c4",
+        ),
+        optimizer=OptimizersContainer.Config(lr=8e-4),
+        lr_scheduler=LRSchedulersContainer.Config(warmup_steps=2),
+        training=TrainingConfig(
+            local_batch_size=8,  # Should be divisible by pipeline_parallel_microbatch_size
+            seq_len=32,
+            steps=8,  # Few iterations for profiling
+            dtype="bfloat16",
+        ),
+        parallelism=ParallelismConfig(
+            expert_parallel_degree=1,
+            expert_tensor_parallel_degree=1,
+            pipeline_parallel_degree=1,
+            pipeline_parallel_microbatch_size=1,  # Configurable micro batch size
+            data_parallel_shard_degree=1,
+        ),
+        checkpoint=CheckpointManager.Config(
+            enable=False,
+        ),
+        activation_checkpoint=ActivationCheckpointConfig(
+            mode="none",
+        ),
+        # compile=CompileConfig(enable=True),
+    )
+
+
+def qwen3_1b_single_no_grouped_mm() -> Trainer.Config:
+    cfg = qwen3_1b_single()
+    assert cfg.model_spec is not None
+    assert cfg.model_spec.model.layer.moe is not None
+    cfg.model_spec.model.layer.moe.experts.use_grouped_mm = False
+    return cfg
+
+
 def qwen3_1b() -> Trainer.Config:
     return Trainer.Config(
         hf_assets_path="./assets/hf/Qwen3-0.6B",
@@ -237,9 +277,9 @@ def qwen3_1b() -> Trainer.Config:
         optimizer=OptimizersContainer.Config(lr=8e-4),
         lr_scheduler=LRSchedulersContainer.Config(warmup_steps=2),
         training=TrainingConfig(
-            global_batch_size=128,  # Should be divisible by pipeline_parallel_microbatch_size
-            local_batch_size=64,  # Should be divisible by pipeline_parallel_microbatch_size
-            seq_len=512,
+            # global_batch_size=128,  # Should be divisible by pipeline_parallel_microbatch_size
+            local_batch_size=32,  # Should be divisible by pipeline_parallel_microbatch_size
+            seq_len=32,
             steps=8,  # Few iterations for profiling
             dtype="bfloat16",
         ),
@@ -258,6 +298,14 @@ def qwen3_1b() -> Trainer.Config:
         ),
         compile=CompileConfig(enable=True),
     )
+
+
+def qwen3_1b_no_grouped_mm() -> Trainer.Config:
+    cfg = qwen3_1b()
+    assert cfg.model_spec is not None
+    assert cfg.model_spec.model.layer.moe is not None
+    cfg.model_spec.model.layer.moe.experts.use_grouped_mm = False
+    return cfg
 
 
 def qwen3_9b_single() -> Trainer.Config:

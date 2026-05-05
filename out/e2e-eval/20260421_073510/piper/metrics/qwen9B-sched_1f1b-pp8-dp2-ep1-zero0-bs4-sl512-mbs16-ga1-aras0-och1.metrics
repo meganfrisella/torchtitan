@@ -1,0 +1,26 @@
+2.33938,0.01405,19.232/15.407/14.407/13.408/12.408/11.409/10.409/13.791
+rank 0 iter time= 2.33938 +/- 0.01405 s (10 samples)
+rank 0 throughput= 14007.134 tokens/s
+rank 0 peak memory= 19.232 GB
+rank 1 peak memory= 15.407 GB
+rank 2 peak memory= 14.407 GB
+rank 3 peak memory= 13.408 GB
+rank 4 peak memory= 12.408 GB
+rank 5 peak memory= 11.409 GB
+rank 6 peak memory= 10.409 GB
+rank 7 peak memory= 13.791 GB
+rank 0 metrics_json= {"ar_a2a_same_stream": false, "batch_size": 4, "dp": 2, "dp_rank": 0, "ep": false, "gradient_accumulation": true, "iter_time_mean_s": 2.339379272299266, "iter_time_std_s": 0.014048527589913446, "iter_times_s": [2.3678631459988537, 2.3621683090023, 2.345659209000587, 2.3248567120026564, 2.33241378099774, 2.334509412998159, 2.3380264899969916, 2.3324345069995616, 2.325910791994829, 2.329950364000979], "mbs": 16, "model": "9B", "overlap_chunks": true, "overlap_zero_ops": false, "peak_memory_by_rank": {"0": {"peak_memory_bytes": 20650277376, "peak_memory_gb": 19.232069492340088}, "1": {"peak_memory_bytes": 16543085568, "peak_memory_gb": 15.406949043273926}, "2": {"peak_memory_bytes": 15469292544, "peak_memory_gb": 14.406901359558105}, "3": {"peak_memory_bytes": 14396539904, "peak_memory_gb": 13.407822608947754}, "4": {"peak_memory_bytes": 13323004928, "peak_memory_gb": 12.408015251159668}, "5": {"peak_memory_bytes": 12250252288, "peak_memory_gb": 11.408936500549316}, "6": {"peak_memory_bytes": 11176717312, "peak_memory_gb": 10.40912914276123}, "7": {"peak_memory_bytes": 14808087552, "peak_memory_gb": 13.791106224060059}}, "pp": 8, "samples": 10, "schedule": "1f1b", "seq_len": 512, "throughput_tokens_per_s": 14007.134451436716}
+
+2.34049,0.01440,19.232/15.407/14.407/13.408/12.408/11.409/10.409/13.791
+rank 1 iter time= 2.34049 +/- 0.01440 s (10 samples)
+rank 1 throughput= 14000.486 tokens/s
+rank 8 peak memory= 19.232 GB
+rank 9 peak memory= 15.407 GB
+rank 10 peak memory= 14.407 GB
+rank 11 peak memory= 13.408 GB
+rank 12 peak memory= 12.408 GB
+rank 13 peak memory= 11.409 GB
+rank 14 peak memory= 10.409 GB
+rank 15 peak memory= 13.791 GB
+rank 1 metrics_json= {"ar_a2a_same_stream": false, "batch_size": 4, "dp": 2, "dp_rank": 1, "ep": false, "gradient_accumulation": true, "iter_time_mean_s": 2.3404902397000114, "iter_time_std_s": 0.014404732391412883, "iter_times_s": [2.370799578995502, 2.3618579449976096, 2.3463052439983585, 2.3248551319993567, 2.3320289160037646, 2.3378204809996532, 2.340971792997152, 2.3330766210056026, 2.327098375004425, 2.33008831099869], "mbs": 16, "model": "9B", "overlap_chunks": true, "overlap_zero_ops": false, "peak_memory_by_rank": {"10": {"peak_memory_bytes": 15469292544, "peak_memory_gb": 14.406901359558105}, "11": {"peak_memory_bytes": 14396539904, "peak_memory_gb": 13.407822608947754}, "12": {"peak_memory_bytes": 13323004928, "peak_memory_gb": 12.408015251159668}, "13": {"peak_memory_bytes": 12250252288, "peak_memory_gb": 11.408936500549316}, "14": {"peak_memory_bytes": 11176717312, "peak_memory_gb": 10.40912914276123}, "15": {"peak_memory_bytes": 14808087552, "peak_memory_gb": 13.791106224060059}, "8": {"peak_memory_bytes": 20650277376, "peak_memory_gb": 19.232069492340088}, "9": {"peak_memory_bytes": 16543085568, "peak_memory_gb": 15.406949043273926}}, "pp": 8, "samples": 10, "schedule": "1f1b", "seq_len": 512, "throughput_tokens_per_s": 14000.485643640191}
+

@@ -1,0 +1,4 @@
+system,sweep,config,pp,dp,ep,zero_level,schedule,mb_size,seq_len,local_batch_size,global_batch_size,nnode,ngpu,command
+deepspeed,zero,qwen3_1b,8,2,1,zero1,1f1b,16,512,256,512,2,8,scripts/run-qwen-deepspeed.sh --nnode 2 --ngpu 8 --model qwen3_1b -- --pp 8 --dp 2 --ep 1 --micro-bs 16 --global-bs 512 --seq-len 512 --schedule 1f1b --zero-stage 1 --steps 8
+deepspeed,zero,qwen3_1b,8,2,1,zero1,1f1b,24,512,384,768,2,8,scripts/run-qwen-deepspeed.sh --nnode 2 --ngpu 8 --model qwen3_1b -- --pp 8 --dp 2 --ep 1 --micro-bs 24 --global-bs 768 --seq-len 512 --schedule 1f1b --zero-stage 1 --steps 8
+deepspeed,zero,qwen3_1b,8,2,1,zero1,1f1b,32,512,512,1024,2,8,scripts/run-qwen-deepspeed.sh --nnode 2 --ngpu 8 --model qwen3_1b -- --pp 8 --dp 2 --ep 1 --micro-bs 32 --global-bs 1024 --seq-len 512 --schedule 1f1b --zero-stage 1 --steps 8

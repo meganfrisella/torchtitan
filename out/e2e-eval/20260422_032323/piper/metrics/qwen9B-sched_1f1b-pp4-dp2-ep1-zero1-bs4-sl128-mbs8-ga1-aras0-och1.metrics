@@ -1,0 +1,18 @@
+11.77410,1.11851,34.582/29.642/29.127/32.812
+rank 0 iter time= 11.77410 +/- 1.11851 s (10 samples)
+rank 0 throughput= 347.882 tokens/s
+rank 0 peak memory= 34.582 GB
+rank 1 peak memory= 29.642 GB
+rank 2 peak memory= 29.127 GB
+rank 3 peak memory= 32.812 GB
+rank 0 metrics_json= {"ar_a2a_same_stream": false, "batch_size": 4, "dp": 2, "dp_rank": 0, "ep": false, "gradient_accumulation": true, "iter_time_mean_s": 11.774096849700436, "iter_time_std_s": 1.1185100560951886, "iter_times_s": [12.671304463001434, 12.409222633999889, 9.984615338995354, 12.415128339998773, 12.457382403998054, 10.130874387003132, 12.338454159995308, 12.605395698003122, 10.104012759999023, 12.624578312010271], "mbs": 8, "model": "9B", "overlap_chunks": true, "overlap_zero_ops": false, "peak_memory_by_rank": {"0": {"peak_memory_bytes": 37132313600, "peak_memory_gb": 34.58216190338135}, "1": {"peak_memory_bytes": 31828053504, "peak_memory_gb": 29.642184734344482}, "2": {"peak_memory_bytes": 31275163136, "peak_memory_gb": 29.127265453338623}, "3": {"peak_memory_bytes": 35231173120, "peak_memory_gb": 32.81158685684204}}, "pp": 4, "samples": 10, "schedule": "1f1b", "seq_len": 128, "throughput_tokens_per_s": 347.88230913050563}
+
+11.78668,0.88220,34.582/29.642/29.127/32.812
+rank 1 iter time= 11.78668 +/- 0.88220 s (10 samples)
+rank 1 throughput= 347.511 tokens/s
+rank 4 peak memory= 34.582 GB
+rank 5 peak memory= 29.642 GB
+rank 6 peak memory= 29.127 GB
+rank 7 peak memory= 32.812 GB
+rank 1 metrics_json= {"ar_a2a_same_stream": false, "batch_size": 4, "dp": 2, "dp_rank": 1, "ep": false, "gradient_accumulation": true, "iter_time_mean_s": 11.786678447700979, "iter_time_std_s": 0.882200794189948, "iter_times_s": [12.833204056994873, 11.93357408400334, 10.587958184987656, 12.112381177008501, 12.135670539006242, 10.669521816991619, 12.179378505999921, 12.66571738901257, 10.259622441997635, 12.48975628100743], "mbs": 8, "model": "9B", "overlap_chunks": true, "overlap_zero_ops": false, "peak_memory_by_rank": {"4": {"peak_memory_bytes": 37132309504, "peak_memory_gb": 34.58215808868408}, "5": {"peak_memory_bytes": 31828053504, "peak_memory_gb": 29.642184734344482}, "6": {"peak_memory_bytes": 31275163136, "peak_memory_gb": 29.127265453338623}, "7": {"peak_memory_bytes": 35231173120, "peak_memory_gb": 32.81158685684204}}, "pp": 4, "samples": 10, "schedule": "1f1b", "seq_len": 128, "throughput_tokens_per_s": 347.51096487229063}
+

@@ -10,8 +10,10 @@ dist/*
 
 # data
 data
-out
+out/ec2
+out/ec2_sweeps
 wandb
+*.nsys-rep
 
 torchtitan/datasets/**/*.model
 

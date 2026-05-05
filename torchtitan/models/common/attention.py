@@ -319,7 +319,7 @@ class ScaledDotProductAttentionWrapper(LocalMapAttention):
         super().__init__()
         if not self.sdpa_backends:
             self.sdpa_backends = [
-                SDPBackend.CUDNN_ATTENTION,
+                # SDPBackend.CUDNN_ATTENTION,
                 SDPBackend.FLASH_ATTENTION,
                 SDPBackend.MATH,
             ]

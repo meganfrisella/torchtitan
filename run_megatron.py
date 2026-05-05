@@ -33,6 +33,8 @@ Must be run from the Megatron-LM root directory.
 
 import argparse
 import os
+import subprocess
+import sys
 
 MODEL_CONFIGS = {
     "qwen3_1b": {
@@ -64,6 +66,31 @@ MODEL_CONFIGS = {
         "vocab_size": 151936,
     },
 }
+
+MEGATRON_OPTIONAL_FLAGS = {
+    "--tensorboard-dir",
+    "--profile",
+    "--use-pytorch-profiler",
+    "--profile-step-start",
+    "--profile-step-end",
+    "--pytorch-profiler-collect-shapes",
+}
+
+
+def _detect_supported_megatron_flags() -> set[str]:
+    """Return optional CLI flags supported by this checkout's pretrain_gpt.py."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "pretrain_gpt.py", "--help"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return set()
+    help_text = f"{proc.stdout}\n{proc.stderr}"
+    return {flag for flag in MEGATRON_OPTIONAL_FLAGS if flag in help_text}
 
 def _setup_distributed(nnodes: int, master_addr: str, background_mode: bool):
     env_node_rank = os.environ.get("NODE_RANK") or os.environ.get("GROUP_RANK") or "0"
@@ -159,11 +186,13 @@ def build_training_args(
     schedule: str,
     zero_level: str,
     enable_profiler: bool,
+    supported_flags: set[str] | None = None,
 ) -> list:
     if sp and tp == 1:
         raise ValueError("--sp requires --tp > 1")
 
     model_config = MODEL_CONFIGS[model]
+    supported_flags = supported_flags or set()
     args = [
         "--num-layers", str(model_config["num_layers"]),
         "--hidden-size", str(model_config["hidden_size"]),
@@ -222,17 +251,28 @@ def build_training_args(
         "--eval-interval", "100000",
         "--eval-iters", "0",
         "--save-interval", "100000",
-        "--tensorboard-dir", tensorboard_dir,
         "--no-gradient-accumulation-fusion",
     ]
+    if "--tensorboard-dir" in supported_flags:
+        args.extend(["--tensorboard-dir", tensorboard_dir])
+    else:
+        print("[megatron] pretrain_gpt.py does not support --tensorboard-dir; skipping")
     if enable_profiler:
-        args.extend([
-            "--profile",
-            "--use-pytorch-profiler",
-            "--profile-step-start", "5",
-            "--profile-step-end", "8",
-            "--pytorch-profiler-collect-shapes",
-        ])
+        profiler_args: list[str] = []
+        if "--profile" in supported_flags:
+            profiler_args.append("--profile")
+        if "--use-pytorch-profiler" in supported_flags:
+            profiler_args.append("--use-pytorch-profiler")
+        if "--profile-step-start" in supported_flags:
+            profiler_args.extend(["--profile-step-start", "5"])
+        if "--profile-step-end" in supported_flags:
+            profiler_args.extend(["--profile-step-end", "8"])
+        if "--pytorch-profiler-collect-shapes" in supported_flags:
+            profiler_args.append("--pytorch-profiler-collect-shapes")
+        if profiler_args:
+            args.extend(profiler_args)
+        else:
+            print("[megatron] profiler flags unsupported by pretrain_gpt.py; running without profiler flags")
     if dp > 1:
         args.extend([
             "--use-distributed-optimizer",
@@ -279,6 +319,7 @@ def main():
         args.tp, args.pp, args.dp, args.cp, args.ep, args.sp,
         args.use_tp_pp_dp_mapping, args.model, args.train_iters, args.schedule, args.zero_level,
         args.nsight,
+        _detect_supported_megatron_flags(),
     )
 
     from torch.distributed.run import main as torchrun_main

@@ -1,0 +1,3 @@
+system,sweep,config,pp,dp,ep,zero_level,schedule,mb_size,seq_len,local_batch_size,global_batch_size,nnode,ngpu,log_path,metrics_path,returncode,status,iter_time_mean,iter_time_stddev,peak_memory_gb_by_rank,failure_reason
+torchtitan,schedule,qwen3_9b,8,2,1,zero1,1f1b,4,512,64,128,2,8,/m-coriander/coriander/mfris/torchtitan/out/e2e-eval/20260421_170741/torchtitan/logs/01_schedule__pp8_dp2_ep1__zero1__1f1b__mb4__sl512_20260421_170741.log,,0,failed,,,,exit_code=0
+torchtitan,schedule,qwen3_9b,8,2,1,zero1,interleaved1f1b,4,512,64,128,2,8,/m-coriander/coriander/mfris/torchtitan/out/e2e-eval/20260421_170741/torchtitan/logs/02_schedule__pp8_dp2_ep1__zero1__interleaved1f1b__mb4__sl512_20260421_170820.log,,0,failed,,,,exit_code=0

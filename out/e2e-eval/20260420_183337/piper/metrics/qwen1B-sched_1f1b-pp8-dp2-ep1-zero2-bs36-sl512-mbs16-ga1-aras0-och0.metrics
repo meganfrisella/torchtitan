@@ -1,0 +1,2 @@
+rank 0 metrics_json= {"dp_rank": 0, "iter_time_mean_s": 5.0511, "iter_time_std_s": 0.008825531145489247, "iter_times_s": [5.044, 5.046, 5.04, 5.051, 5.048, 5.062, 5.042, 5.058, 5.051, 5.069], "peak_memory_by_rank": {}, "samples": 10}
+rank 1 metrics_json= {"dp_rank": 1, "iter_time_mean_s": 5.0509, "iter_time_std_s": 0.009278469701410864, "iter_times_s": [5.045, 5.046, 5.041, 5.051, 5.043, 5.063, 5.042, 5.058, 5.05, 5.07], "peak_memory_by_rank": {}, "samples": 10}

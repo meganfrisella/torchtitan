@@ -1,0 +1,4 @@
+system,sweep,config,pp,dp,ep,zero_level,schedule,mb_size,seq_len,local_batch_size,global_batch_size,nnode,ngpu,log_path,metrics_path,returncode,status,iter_time_mean,iter_time_stddev,peak_memory_gb_by_rank,failure_reason
+megatron,schedule,qwen3_1b,4,1,1,zero1,1f1b,4,512,32,32,1,4,/m-coriander/coriander/mfris/torchtitan/out/e2e-eval/20260420_231125/megatron/logs/01_schedule__pp4_dp1_ep1__zero1__1f1b__mb4__sl512_20260420_231125.log,,0,ok,0.65886,0.14040064957114692,7.84/4.74/4.24/8.06,
+torchtitan,schedule,qwen3_1b,4,1,1,zero1,1f1b,4,512,32,32,1,4,/m-coriander/coriander/mfris/torchtitan/out/e2e-eval/20260420_231125/torchtitan/logs/01_schedule__pp4_dp1_ep1__zero1__1f1b__mb4__sl512_20260420_231323.log,,0,ok,0.43625,0.00756,4.00/3.25/2.07/3.39,
+piper,schedule,qwen3_1b,4,1,1,zero1,1f1b,4,512,32,32,1,4,/m-coriander/coriander/mfris/torchtitan/out/e2e-eval/20260420_231125/piper/logs/qwen1B-sched_1f1b-pp4-dp1-ep1-zero1-bs4-sl512-mbs8-ga1-aras0-och0/run.log,,1,oom,,,,oom

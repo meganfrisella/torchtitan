@@ -1,0 +1,2 @@
+system,sweep,config,pp,dp,ep,zero_level,schedule,mb_size,seq_len,local_batch_size,global_batch_size,nnode,ngpu,log_path,metrics_path,returncode,status,iter_time_mean,iter_time_stddev,peak_memory_gb_by_rank,failure_reason
+piper,schedule,qwen3_9b,4,4,4,zero1,dualpipe,4,512,32,128,4,4,/m-coriander/coriander/mfris/torchtitan/out/e2e-eval/20260423_031722/piper/logs/qwen9B-sched_dualpipev-pp4-dp4-ep4-zero1-nsight1-bs4-sl512-mbs8-ga1-aras0-och1/run.log,,1,failed,,,,exit_code=1

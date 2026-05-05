@@ -1,0 +1,4 @@
+sweep,config,pp,dp,ep,zero_level,schedule,mb_size,seq_len,local_batch_size,global_batch_size,nnode,ngpu,log_path,returncode,status,iter_time_mean,iter_time_stddev,peak_memory_gb_by_rank,failure_reason
+schedule,qwen3_1b,8,1,1,none,1f1b,16,512,256,256,1,8,/m-coriander/coriander/mfris/torchtitan/out/e2e-eval/20260418_032342/logs/14_schedule__pp8_dp1_ep1__none__1f1b__mb16__sl512_20260418_033913.log,0,ok,2.02552,0.01068,12.76/15.90/9.57/8.22/6.79/5.47/4.06/22.61,
+schedule,qwen3_1b,8,1,1,none,interleaved1f1b,16,512,256,256,1,8,/m-coriander/coriander/mfris/torchtitan/out/e2e-eval/20260418_032342/logs/15_schedule__pp8_dp1_ep1__none__interleaved1f1b__mb16__sl512_20260418_034013.log,0,ok,2.24763,0.01025,18.07/27.14/14.84/13.45/12.07/10.78/9.35/25.57,
+schedule,qwen3_1b,8,1,1,none,zerobubble,16,512,256,256,1,8,/m-coriander/coriander/mfris/torchtitan/out/e2e-eval/20260418_032342/logs/16_schedule__pp8_dp1_ep1__none__zerobubble__mb16__sl512_20260418_034116.log,0,oom,,,,oom

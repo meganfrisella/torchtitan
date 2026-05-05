@@ -197,7 +197,7 @@ def build_experiments(
         "ep": 1,
         "zero_level": "zero1",
         "schedule": "1f1b",
-        "mb_size": 4,
+        "mb_size": 8,
     }
     supported_schedules_by_system = {
         "torchtitan": {"1f1b", "interleaved1f1b", "dualpipe"},
@@ -950,7 +950,7 @@ def save_scalability_tps_plot(title: str, xlabel: str, rows: list[Result], outpu
         mantissa_text = f"{mantissa:.0f}" if abs(mantissa - round(mantissa)) < 1e-9 else f"{mantissa:.1f}".rstrip("0").rstrip(".")
         return f"{mantissa_text}e{exponent}"
 
-    ax.set_title("Piper PP x DP Scalability", fontsize=26)
+    ax.set_title("Flexo PP x DP Scalability", fontsize=26)
     ax.set_xlabel("")
     ax.set_ylabel("Tokens/s", fontsize=20)
     ax.set_xticks(x_centers)

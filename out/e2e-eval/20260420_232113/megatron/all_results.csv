@@ -1,0 +1,2 @@
+system,sweep,config,pp,dp,ep,zero_level,schedule,mb_size,seq_len,local_batch_size,global_batch_size,nnode,ngpu,log_path,metrics_path,returncode,status,iter_time_mean,iter_time_stddev,peak_memory_gb_by_rank,failure_reason
+megatron,schedule,qwen3_1b,4,1,1,zero1,1f1b,4,512,32,32,1,4,/m-coriander/coriander/mfris/torchtitan/out/e2e-eval/20260420_232113/megatron/logs/01_schedule__pp4_dp1_ep1__zero1__1f1b__mb4__sl512_20260420_232113.log,,0,ok,0.57702,0.013622393328633567,7.84/4.74/4.24/8.06,
